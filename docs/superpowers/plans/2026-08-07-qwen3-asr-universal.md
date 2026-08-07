@@ -2024,6 +2024,8 @@ def main(target: str):
 
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name", "q3asr",
            "--collect-all", "imageio_ffmpeg",
+           "--collect-all", "llama_cpp",   # llama_cpp/lib 内的 llama.dll 必须打进, 否则运行时报 WinError 3
+           f"--add-data=resources{data_sep}resources",
            "q3asr/__main__.py"]
     subprocess.run(cmd, check=True)
     exe = Path("dist/q3asr.exe" if sys.platform.startswith("win") else "dist/q3asr")
@@ -2117,6 +2119,8 @@ jobs:
 ```
 
 - [ ] **Step 3: 本地冒烟验证 build.py(Windows cpu)**
+
+注: `.gitignore` 需含 `qwen3-asr-*.zip` 与 `*.spec`(PyInstaller 产物不入库)。打包后必须做**真实推理冒烟**(`--version` 不 import llama_cpp, 会漏掉 lib 未打包的问题): 用 `--model-dir` 指到平铺模型目录转录一小段音频, 验证 JSON 非空且 schema 合法。
 
 ```bash
 python ci/build.py windows-x64-cpu
