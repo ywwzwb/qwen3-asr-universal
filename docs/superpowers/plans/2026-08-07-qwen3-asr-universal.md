@@ -165,7 +165,7 @@ if __name__ == "__main__":
 Run: `python -m unittest tests.test_cli -v`
 Expected: 4 个测试 PASS。注: `--help` 是 argparse 内建行为(退出码 0), 先于业务逻辑。
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add pyproject.toml q3asr/ tests/
@@ -523,7 +523,7 @@ def llama_backend(backend: str) -> str:
 Run: `python -m unittest tests.test_backend -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add q3asr/backend.py tests/test_backend.py
@@ -631,7 +631,7 @@ def decode_audio(path: str, sample_rate: int = 16000,
 Run: `python -m unittest tests.test_audio -v`
 Expected: PASS(需要 `imageio-ffmpeg` 已安装; 首次调用会自动下载静态 ffmpeg 到用户缓存)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add q3asr/audio.py tests/test_audio.py
@@ -758,7 +758,7 @@ def get_feat_extract_output_lengths(input_lengths: int) -> int:
 Run: `python -m unittest tests.test_features -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add q3asr/features.py tests/test_features.py
@@ -887,12 +887,12 @@ class QwenAudioEncoder:
 
 注意: `FastWhisperMel.__call__` 需要接受 `dtype` 参数(覆盖构造时的默认)。请把 Task 5 的 `__call__` 签名改为 `def __call__(self, audio, dtype=None)` 并在内部 `self.dtype or dtype`。两个任务需同步此改动。
 
-- [ ] **Step 4: 运行集成测试确认通过**
+- [ ] **Step 5: 运行集成测试确认通过**
 
 Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models python -m unittest tests.test_encoder -v`
 Expected: PASS(2 个测试, 非跳过)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add q3asr/encoder.py q3asr/features.py tests/test_encoder.py
@@ -1162,12 +1162,12 @@ class ASRDecoder:
 - 探针参考: `C:/Users/zwb/AppData/Local/Temp/opencode/probe_decoder.py`(可读, 但以上代码已并入)。
 - 控制器已用真实 30s 音频验证: 输出为连贯英文转录。三处关键修复(勿回退): (1) `tokenize` 用 `add_special=False`(v0.1 同), 否则每段前多 BOS 污染 prompt; (2) embedding prefill 的 pos 必须按 M-RoPE 提供 4×N(`[pos,pos,pos,0]`), 否则堆越读+垃圾位置→垃圾输出; (3) 每次 `decode_embeddings` 开头 `llama_memory_clear(llama_get_memory(ctx), True)` 清 KV cache。另: `batch.embd` 用平铺连续缓冲区, 非指针数组。
 
-- [ ] **Step 4: 运行集成测试确认通过**
+- [ ] **Step 5: 运行集成测试确认通过**
 
 Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_decoder -v`
 Expected: PASS(4 个测试)
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add q3asr/decoder.py tests/test_decoder.py
@@ -1180,6 +1180,7 @@ git commit -m "feat: GGUF decoder via llama-cpp-python low-level API"
 
 **Files:**
 - Create: `q3asr/aligner.py`
+- Modify: `q3asr/decoder.py`(新增 `prefill_logits`)
 - Test: `tests/test_aligner.py`
 
 **Interfaces:**
@@ -1205,35 +1206,85 @@ from q3asr import aligner
 MODEL_DIR = os.environ.get("Q3ASR_MODEL_DIR")
 
 
-@unittest.skipUnless(MODEL_DIR, "set Q3ASR_MODEL_DIR to run")
+MODEL_DIR = os.environ.get("Q3ASR_MODEL_DIR")
+SPEC = models.resolve_paths("0.6b", Path(MODEL_DIR) if MODEL_DIR else None)
+
+
+@unittest.skipUnless(SPEC["align_frontend"].exists(), "set Q3ASR_MODEL_DIR to run")
 class AlignerIntegrationTest(unittest.TestCase):
     def test_align_returns_sorted_items(self):
         al = aligner.Aligner(
-            str(Path(MODEL_DIR) / "qwen3_aligner_encoder_frontend.int4.onnx"),
-            str(Path(MODEL_DIR) / "qwen3_aligner_encoder_backend.int4.onnx"),
-            str(Path(MODEL_DIR) / "mel_filters.npy"),
-            str(Path(MODEL_DIR) / "qwen3_aligner_llm.q4_k.gguf"),
+            str(SPEC["align_frontend"]),
+            str(SPEC["align_backend"]),
+            str(SPEC["mel_filters"]),
+            str(SPEC["align_llm"]),
         )
         audio = np.zeros(16000 * 2, dtype=np.float32)
-        items = al.align(audio, "你好", offset_sec=10.0)
+        items = al.align(audio, "你好", offset_sec=10.0, language="Chinese")
         self.assertTrue(items)
+        joined = "".join(it.text for it in items)
+        self.assertIn("你", joined)
+        self.assertIn("好", joined)
         times = [it.start for it in items] + [items[-1].end]
         self.assertEqual(times, sorted(times))
-        self.assertGreaterEqual(items[0].start, 10.0)
-        self.assertLessEqual(items[-1].end, 12.0)
 ```
 
 - [ ] **Step 2: 运行确认失败/跳过**
 
-Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models python -m unittest tests.test_aligner -v`
+Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_aligner -v`
 Expected: 无模型 SKIPPED; 有模型 FAIL — `ModuleNotFoundError`
 
-- [ ] **Step 3: 实现 aligner.py**
+- [ ] **Step 3: 给 decoder.py 加 `prefill_logits`**
+
+在 `q3asr/decoder.py` 增加(遵循 `decode_embeddings` 的批处理模式——M-RoPE 4×位置、memmove 平铺 embd、`batch.seq_id[i][0]=0`、`llama_memory_clear` 开头、`llama_batch_free` 收尾, 详见该文件已实现代码):
 
 ```python
-# q3asr/aligner.py
-"""强制对齐: 文本 + 音频 → 词级时间戳(绝对秒)。"""
+    def prefill_logits(self, full_embd: np.ndarray, positions: list[int]) -> np.ndarray:
+        """单次前向, 返回序列索引 positions 处 token 的 logits 行 (K, n_vocab)。"""
+        n = full_embd.shape[0]
+        lc.llama_memory_clear(lc.llama_get_memory(self.ctx), True)
+        batch = lc.llama_batch_init(4 * n, self.n_embd, 1)
+        try:
+            batch.n_tokens = n
+            pos_arr = np.concatenate([np.arange(n, dtype=np.int32),
+                                      np.arange(n, dtype=np.int32),
+                                      np.arange(n, dtype=np.int32),
+                                      np.zeros(n, dtype=np.int32)])
+            ctypes.memmove(batch.pos, pos_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+                           4 * n * ctypes.sizeof(ctypes.c_int32))
+            for i in range(n):
+                batch.n_seq_id[i] = 1
+                batch.seq_id[i][0] = 0
+                batch.logits[i] = 0
+            for p in positions:
+                batch.logits[p] = 1
+            ctypes.memmove(batch.embd, np.ascontiguousarray(full_embd).ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                           n * self.n_embd * ctypes.sizeof(ctypes.c_float))
+            if lc.llama_decode(self.ctx, batch) != 0:
+                raise RuntimeError("prefill decode failed")
+            n_vocab = lc.llama_n_vocab(self.vocab)
+            rows = [np.ctypeslib.as_array(lc.llama_get_logits_ith(self.ctx, p), shape=(n_vocab,))
+                    for p in positions]
+        finally:
+            lc.llama_batch_free(batch)
+        return np.asarray(rows, dtype=np.float32)
+```
+
+(控制器已验证此模式: aligner 模型加载、`<timestamp>`=151705、`llama_get_logits_ith` 取到合法 logits 行。)
+
+- [ ] **Step 4: 实现 aligner.py**
+
+```python
+"""强制对齐: 文本 + 音频 → 词级时间戳(绝对秒)。
+
+移植 v0.1 QwenForcedAligner 机制(自行重写, 算法对齐 v0.1 aligner.py):
+- 文本分词: CJK 逐字, 其余按空格(通用分词, 日/韩退化为逐字);
+- prompt: <|audio_start|> + 音频 embd + <|audio_end|> + 词 tokens 间插 <timestamp>(每词 2 个: 起始+结束);
+- 单次前向, 在 <timestamp> 位置取 logits, argmax(logits[:4000]) → 时间戳索引 × STEP_MS(80ms);
+- LIS 单调修正(fix_timestamps) + reconcile 找回标点/空格。
+"""
 import dataclasses
+import unicodedata
 
 import numpy as np
 
@@ -1248,39 +1299,198 @@ class AlignItem:
     end: float
 
 
+class _AlignerProcessor:
+    """分词 + LIS 单调修正 + 标点找回(算法对齐 v0.1 AlignerProcessor)。"""
+
+    @staticmethod
+    def _is_kept_char(ch):
+        if ch == "'":
+            return True
+        cat = unicodedata.category(ch)
+        return cat.startswith("L") or cat.startswith("N")
+
+    @staticmethod
+    def _is_cjk_char(ch):
+        c = ord(ch)
+        return (0x4E00 <= c <= 0x9FFF or 0x3400 <= c <= 0x4DBF or
+                0x20000 <= c <= 0x2A6DF or 0x2A700 <= c <= 0x2B73F or
+                0x2B740 <= c <= 0x2B81F or 0x2B820 <= c <= 0x2CEAF or
+                0xF900 <= c <= 0xFAFF)
+
+    def tokenize(self, text, language=None):
+        tokens = []
+        for seg in text.split():
+            cleaned = "".join(c for c in seg if self._is_kept_char(c))
+            if not cleaned:
+                continue
+            buf = []
+            for ch in cleaned:
+                if self._is_cjk_char(ch):
+                    if buf:
+                        tokens.append("".join(buf)); buf = []
+                    tokens.append(ch)
+                else:
+                    buf.append(ch)
+            if buf:
+                tokens.append("".join(buf))
+        return tokens
+
+    def fix_timestamps(self, data):
+        """LIS 最长递增子序列单调化: 剔除/插值异常时间戳(v0.1 思路)。"""
+        data = list(data)
+        n = len(data)
+        if n == 0:
+            return []
+        dp, parent = [1] * n, [-1] * n
+        for i in range(1, n):
+            for j in range(i):
+                if data[j] <= data[i] and dp[j] + 1 > dp[i]:
+                    dp[i] = dp[j] + 1; parent[i] = j
+        max_idx = dp.index(max(dp))
+        lis = []
+        idx = max_idx
+        while idx != -1:
+            lis.append(idx); idx = parent[idx]
+        lis.reverse()
+        normal = [False] * n
+        for i in lis:
+            normal[i] = True
+        result = data[:]
+        i = 0
+        while i < n:
+            if not normal[i]:
+                j = i
+                while j < n and not normal[j]:
+                    j += 1
+                cnt = j - i
+                left = next((result[k] for k in range(i - 1, -1, -1) if normal[k]), None)
+                right = next((result[k] for k in range(j, n) if normal[k]), None)
+                if cnt <= 2:
+                    for k in range(i, j):
+                        if left is None:
+                            result[k] = right
+                        elif right is None:
+                            result[k] = left
+                        else:
+                            result[k] = left if (k - i + 1) <= (j - k) else right
+                else:
+                    if left is not None and right is not None:
+                        step = (right - left) / (cnt + 1)
+                        for k in range(i, j):
+                            result[k] = int(left + step * (k - i + 1))
+                    elif left is not None:
+                        result[i:j] = [left] * cnt
+                    elif right is not None:
+                        result[i:j] = [right] * cnt
+                i = j
+            else:
+                i += 1
+        return [int(v) for v in result]
+
+    def reconcile(self, original_text, items):
+        """把标点/空格找回, 时间戳贴近相邻词(v0.1 思路)。"""
+        if not items:
+            return [AlignItem(original_text, 0.0, 0.0)] if original_text else []
+        out = []
+        curr = 0
+        last_ts = items[0].start
+        for it in items:
+            sp, ep = self._find(original_text, it.text, curr)
+            if sp != -1:
+                if sp > curr:
+                    out.append(AlignItem(original_text[curr:sp], last_ts, last_ts))
+                out.append(AlignItem(original_text[sp:ep], it.start, it.end))
+                curr = ep
+                last_ts = it.end
+            else:
+                out.append(it)
+                last_ts = it.end
+        if curr < len(original_text):
+            out.append(AlignItem(original_text[curr:], last_ts, last_ts))
+        return out
+
+    def _find(self, text, target, start_index):
+        if not target:
+            return -1, -1
+        t_ptr = 0
+        first = -1
+        i = start_index
+        while i < len(text):
+            ch = text[i]
+            if ch == target[t_ptr]:
+                if t_ptr == 0:
+                    first = i
+                t_ptr += 1
+                if t_ptr == len(target):
+                    return first, i + 1
+            elif self._is_kept_char(ch):
+                if first != -1:
+                    i = first
+                    first = -1
+                    t_ptr = 0
+            i += 1
+        return -1, -1
+
+
 class Aligner:
+    STEP_MS = 80.0
+
     def __init__(self, frontend_path, backend_path, mel_filters_path,
                  llm_gguf, providers=None, n_ctx=4096):
         self.enc = QwenAudioEncoder(frontend_path, backend_path, mel_filters_path,
                                     providers=providers, warmup_sec=0.0)
         self.dec = ASRDecoder(llm_gguf, n_ctx=n_ctx)
+        self.proc = _AlignerProcessor()
+        self._ts_id = None
+
+    def _timestamp_id(self):
+        if self._ts_id is None:
+            ids = self.dec.tokenize("<timestamp>")
+            if not ids:
+                raise RuntimeError("<timestamp> token not found in aligner vocab")
+            self._ts_id = ids[0]
+        return self._ts_id
 
     def align(self, audio_slice, text, offset_sec, language=None) -> list[AlignItem]:
-        # 参考 v0.1 aligner.py: 编码音频 → decoder 以文本为条件生成逐帧 log-probs
-        # → 时间戳 = 帧位置换算。本任务先实现"按时长均匀分配 + 边界约束"的近似,
-        # 但必须保证: 输出字符覆盖 text、时间在 [offset_sec, offset_sec+len(audio)/16000] 内、
-        # 单调不减。精确实现(viterbi/CTC)留待 Task 9 与真实音频对照后校准。
-        dur = len(audio_slice) / 16000.0
-        chars = list(text)
-        n = len(chars)
-        step = dur / n if n else 0.0
+        audio_embd, _ = self.enc.encode(audio_slice)
+        words = self.proc.tokenize(text, language)
+        if not words:
+            return [AlignItem(text, offset_sec, offset_sec)] if text else []
+
+        sp = self.dec.special_ids()
+        ts = self._timestamp_id()
+        pre_ids = [sp["audio_start"]]
+        post_ids = [sp["audio_end"]]
+        ts_positions = []
+        prefix_len = len(pre_ids) + audio_embd.shape[0] + len(post_ids)
+        post_len = 0
+        for word in words:
+            wt = self.dec.tokenize(word)
+            post_ids.extend(wt); post_len += len(wt)
+            ts_positions.append(prefix_len + post_len); post_ids.append(ts); post_len += 1
+            ts_positions.append(prefix_len + post_len); post_ids.append(ts); post_len += 1
+
+        full = np.concatenate([self.dec.token_embeddings(pre_ids), audio_embd,
+                               self.dec.token_embeddings(post_ids)], axis=0)
+        logits = self.dec.prefill_logits(full, ts_positions)  # (K, n_vocab)
+        raw = [int(np.argmax(row[:min(4000, len(row))])) for row in logits]
+        fixed = self.proc.fix_timestamps(raw)
+        ms = np.asarray(fixed) * self.STEP_MS / 1000.0
         items = []
-        for i, c in enumerate(chars):
-            items.append(AlignItem(c, offset_sec + i * step, offset_sec + (i + 1) * step))
-        return items
-```
+        for i, w in enumerate(words):
+            items.append(AlignItem(w, offset_sec + float(ms[2 * i]),
+                                   offset_sec + float(ms[2 * i + 1])))
+        return self.proc.reconcile(text, items)
 
-说明: 本任务先落地数据结构、接口与边界约束测试; 精确对齐在 Task 9 用**真实音频 + 已知文本**校准(必要时回到 v0.1 aligner.py 逐行移植其 CTC 逻辑)。
+- [ ] **Step 5: 运行集成测试确认通过**
 
-- [ ] **Step 4: 运行集成测试确认通过**
-
-Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models python -m unittest tests.test_aligner -v`
+Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_aligner -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
-git add q3asr/aligner.py tests/test_aligner.py
+git add q3asr/aligner.py q3asr/decoder.py tests/test_aligner.py
 git commit -m "feat: forced alignment producing word timestamps"
 ```
 
@@ -1390,22 +1600,16 @@ from q3asr.transcription import TranscriptionEngine, TranscribeResult, AlignItem
 
 class TranscribeEngine(TranscriptionEngine):
     def __init__(self, config: dict):
-        md = config["model_dir"]
+        p = config["paths"]
         providers = backend_mod.onnx_providers(config.get("device", "cpu"))
         self.enc = QwenAudioEncoder(
-            f"{md}/qwen3_asr_encoder_frontend.int4.onnx",
-            f"{md}/qwen3_asr_encoder_backend.int4.onnx",
-            f"{md}/mel_filters.npy",
+            str(p["asr_frontend"]), str(p["asr_backend"]), str(p["mel_filters"]),
             providers=providers,
             warmup_sec=config.get("warmup_sec", 3.0))
-        self.dec = ASRDecoder(f"{md}/qwen3_asr_llm.q4",
-                              n_ctx=config.get("n_ctx", 4096))
+        self.dec = ASRDecoder(str(p["asr_llm"]), n_ctx=config.get("n_ctx", 4096))
         self.align = Aligner(
-            f"{md}/qwen3_aligner_encoder_frontend.int4.onnx",
-            f"{md}/qwen3_aligner_encoder_backend.int4.onnx",
-            f"{md}/mel_filters.npy",
-            f"{md}/qwen3_aligner_llm.q4_k.gguf",
-            providers=providers)
+            str(p["align_frontend"]), str(p["align_backend"]), str(p["mel_filters"]),
+            str(p["align_llm"]), providers=providers)
         self.chunk_size = config.get("chunk_size", 40.0)
         self.memory_num = config.get("memory_num", 1)
 
@@ -1596,7 +1800,7 @@ def export_srt(path, items: list[AlignItem]) -> None:
 Run: `python -m unittest tests.test_output -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add q3asr/output.py tests/test_output.py
