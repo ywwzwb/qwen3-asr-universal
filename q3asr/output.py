@@ -7,7 +7,7 @@ from q3asr.transcription import AlignItem
 
 def export_json(path, items: list[AlignItem]) -> None:
     data = [{"text": it.text, "start": round(it.start, 3), "end": round(it.end, 3)}
-            for it in items if it.start < it.end]
+            for it in items]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
