@@ -1481,6 +1481,7 @@ class Aligner:
             items.append(AlignItem(w, offset_sec + float(ms[2 * i]),
                                    offset_sec + float(ms[2 * i + 1])))
         return self.proc.reconcile(text, items)
+```
 
 - [ ] **Step 5: 运行集成测试确认通过**
 
