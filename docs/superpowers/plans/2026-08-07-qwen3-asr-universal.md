@@ -1937,7 +1937,7 @@ if __name__ == "__main__":
 
 ```bash
 Q3ASR_MODEL_DIR=...   # 实际用 --model-dir
-python -m q3asr --model-dir "$HOME/.cache/q3asr/models" "$Q3ASR_TEST_AUDIO" -y --device cpu
+python -m q3asr --model-dir "$HOME/.cache/q3asr/models-flat" "$Q3ASR_TEST_AUDIO" -y --device cpu
 python - <<'PY'
 import json
 d = json.load(open("clip.json", encoding="utf-8"))
