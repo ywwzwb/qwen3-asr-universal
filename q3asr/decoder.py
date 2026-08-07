@@ -83,7 +83,7 @@ class ASRDecoder:
     def tokenize(self, text: str) -> list[int]:
         b = text.encode("utf-8")
         buf = (lc.llama_token * 4096)()
-        n = lc.llama_tokenize(self.vocab, b, len(b), buf, 4096, True, True)
+        n = lc.llama_tokenize(self.vocab, b, len(b), buf, 4096, False, True)
         return list(buf[:n])
 
     def token_embeddings(self, ids: list[int]) -> np.ndarray:
@@ -103,6 +103,7 @@ class ASRDecoder:
     def decode_embeddings(self, embd, prefix_text, language=None, context="",
                           temperature=0.4, rollback_num=5,
                           is_last_chunk=False, max_new_tokens=512) -> DecodeResult:
+        lc.llama_memory_clear(lc.llama_get_memory(self.ctx), True)
         sp = self.specials
         pre = ([sp["im_start"]] + self.tokenize(f"system\n{context or 'You are a helpful assistant.'}")
                + [sp["im_end"], sp["im_start"]] + self.tokenize("user\n") + [sp["audio_start"]])
@@ -115,9 +116,17 @@ class ASRDecoder:
         n = full.shape[0]
 
         # prefill: embedding batch
-        batch = lc.llama_batch_init(n, 1, 1)
+        # M-RoPE (qwen3vl arch) requires 4 position ids per embedding token:
+        # [pos, pos, pos, 0]. llama.cpp copies n_tokens*n_pos_per_embd positions
+        # directly from batch.pos for embedding (no-token) batches, so we must
+        # provide all 4n; non-mrope models read only the first n (harmless).
+        batch = lc.llama_batch_init(4 * n, 1, 1)
         batch.n_tokens = n
-        batch.pos = ctypes.cast(_int_arr(n, range(n)), type(batch.pos))
+        pos_arr = np.concatenate([np.arange(n, dtype=np.int32),
+                                  np.arange(n, dtype=np.int32),
+                                  np.arange(n, dtype=np.int32),
+                                  np.zeros(n, dtype=np.int32)])
+        batch.pos = ctypes.cast(_int_arr(4 * n, pos_arr), type(batch.pos))
         batch.n_seq_id = ctypes.cast(_int_arr(n, [1] * n), type(batch.n_seq_id))
         seq_arr = (ctypes.POINTER(lc.llama_token) * n)(
             *(ctypes.cast(_int_arr(1, [0]), ctypes.POINTER(lc.llama_token)) for _ in range(n)))
