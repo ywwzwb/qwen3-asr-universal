@@ -17,7 +17,7 @@ TARGETS = {
     "linux-x64-cpu":      {"onnx": "onnxruntime", "llama": ["llama-cpp-python", ""]},
     "linux-x64-cuda":     {"onnx": "onnxruntime-gpu", "llama": ["llama-cpp-python", "cuda"]},
     "linux-x64-vulkan":   {"onnx": "onnxruntime", "llama": ["llama-cpp-python", "vulkan"]},
-    "macos-arm64-metal":  {"onnx": "onnxruntime-silicon", "llama": ["llama-cpp-python", "metal"]},
+    "macos-arm64-metal":  {"onnx": "onnxruntime", "llama": ["llama-cpp-python", "metal"]},   # onnxruntime macOS arm64 wheel 内置 MPS EP (onnxruntime-silicon 已下架)
     "macos-arm64-cpu":    {"onnx": "onnxruntime", "llama": ["llama-cpp-python", ""]},
 }
 
