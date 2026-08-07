@@ -50,10 +50,6 @@ class _TokenEmbeddingTable:
                                     dtype=np.float32)
 
 
-def _int_arr(n, vals):
-    return (lc.llama_token * n)(*vals)
-
-
 class ASRDecoder:
     def __init__(self, gguf_path: str, n_ctx: int = 4096, n_batch: int = 4096):
         lc.llama_backend_init()
@@ -84,14 +80,25 @@ class ASRDecoder:
         b = text.encode("utf-8")
         buf = (lc.llama_token * 4096)()
         n = lc.llama_tokenize(self.vocab, b, len(b), buf, 4096, False, True)
+        if n < 0:
+            raise RuntimeError(f"tokenize: text too long for 4096-token buffer (need {-n})")
         return list(buf[:n])
 
     def token_embeddings(self, ids: list[int]) -> np.ndarray:
         return self.emb_tbl(ids)
 
     def _detok(self, token: int) -> str:
-        buf = ctypes.create_string_buffer(64)
-        m = lc.llama_token_to_piece(self.vocab, token, buf, 64, 0, True)
+        size = 128
+        buf = ctypes.create_string_buffer(size)
+        while True:
+            m = lc.llama_token_to_piece(self.vocab, token, buf, size, 0, True)
+            if m >= 0 and m < size:
+                break
+            if m < 0:
+                size = max(size * 2, -m + 1)
+            else:
+                size = m + 1
+            buf = ctypes.create_string_buffer(size)
         return buf.raw[:m].decode("utf-8", errors="replace") if m > 0 else ""
 
     def _new_chain(self, temperature, seed):
@@ -114,56 +121,65 @@ class ASRDecoder:
             + [sp["asr_text"]] + self.tokenize(prefix_text)
         full = np.concatenate([self.token_embeddings(pre), embd, self.token_embeddings(suf)], axis=0)
         n = full.shape[0]
+        assert n <= 4096, f"prompt too long: {n} tokens > 4096"
 
         # prefill: embedding batch
         # M-RoPE (qwen3vl arch) requires 4 position ids per embedding token:
         # [pos, pos, pos, 0]. llama.cpp copies n_tokens*n_pos_per_embd positions
         # directly from batch.pos for embedding (no-token) batches, so we must
         # provide all 4n; non-mrope models read only the first n (harmless).
-        batch = lc.llama_batch_init(4 * n, 1, 1)
-        batch.n_tokens = n
-        pos_arr = np.concatenate([np.arange(n, dtype=np.int32),
-                                  np.arange(n, dtype=np.int32),
-                                  np.arange(n, dtype=np.int32),
-                                  np.zeros(n, dtype=np.int32)])
-        batch.pos = ctypes.cast(_int_arr(4 * n, pos_arr), type(batch.pos))
-        batch.n_seq_id = ctypes.cast(_int_arr(n, [1] * n), type(batch.n_seq_id))
-        seq_arr = (ctypes.POINTER(lc.llama_token) * n)(
-            *(ctypes.cast(_int_arr(1, [0]), ctypes.POINTER(lc.llama_token)) for _ in range(n)))
-        batch.seq_id = ctypes.cast(seq_arr, type(batch.seq_id))
-        logits = (ctypes.c_byte * n)(*([0] * (n - 1) + [1]))
-        batch.logits = ctypes.cast(logits, type(batch.logits))
-        batch.embd = ctypes.cast(full.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                                 type(batch.embd))
-        if lc.llama_decode(self.ctx, batch) != 0:
-            raise RuntimeError("prefill decode failed")
+        #
+        # All buffers come from llama_batch_init and are filled in-place, so no
+        # ctypes temporary is ever dereferenced after its Python object is freed;
+        # the batch struct owns the memory and llama_batch_free releases it.
+        batch = lc.llama_batch_init(4 * n, self.n_embd, 1)
+        try:
+            batch.n_tokens = n
+            pos_arr = np.concatenate([np.arange(n, dtype=np.int32),
+                                      np.arange(n, dtype=np.int32),
+                                      np.arange(n, dtype=np.int32),
+                                      np.zeros(n, dtype=np.int32)])
+            ctypes.memmove(batch.pos, pos_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+                           4 * n * ctypes.sizeof(ctypes.c_int32))
+            for i in range(n):
+                batch.n_seq_id[i] = 1
+                batch.seq_id[i][0] = 0
+                batch.logits[i] = 0
+            batch.logits[n - 1] = 1
+            ctypes.memmove(batch.embd, full.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                           n * self.n_embd * ctypes.sizeof(ctypes.c_float))
+            if lc.llama_decode(self.ctx, batch) != 0:
+                raise RuntimeError("prefill decode failed")
+        finally:
+            lc.llama_batch_free(batch)
 
         # generation
         chain = self._new_chain(temperature, int(np.random.randint(0, 2 ** 31 - 1)))
+        gb = lc.llama_batch_init(1, 0, 1)
         text_parts = []
         stable = []
         cur = n
-        for _ in range(max_new_tokens):
-            token = lc.llama_sampler_sample(chain, self.ctx, -1)
-            if token in (sp["eos"], sp["im_end"]):
-                break
-            gb = lc.llama_batch_init(1, 0, 1)
+        try:
             gb.n_tokens = 1
-            gb.token = ctypes.cast(_int_arr(1, [token]), type(gb.token))
-            gb.pos = ctypes.cast(_int_arr(1, [cur]), type(gb.pos))
-            gb.n_seq_id = ctypes.cast(_int_arr(1, [1]), type(gb.n_seq_id))
-            gseq = (ctypes.POINTER(lc.llama_token) * 1)(
-                ctypes.cast(_int_arr(1, [0]), ctypes.POINTER(lc.llama_token)))
-            gb.seq_id = ctypes.cast(gseq, type(gb.seq_id))
-            glog = (ctypes.c_byte * 1)(1)
-            gb.logits = ctypes.cast(glog, type(gb.logits))
-            lc.llama_decode(self.ctx, gb)
-            stable.append(token)
-            if len(stable) > rollback_num:
-                text_parts.append(self._detok(stable.pop(0)))
-            cur += 1
-            if len(stable) > 15 and len(set(stable[-15:])) <= 3:
-                return DecodeResult("".join(text_parts), n, len(stable), is_aborted=True)
+            gb.n_seq_id[0] = 1
+            gb.seq_id[0][0] = 0
+            gb.logits[0] = 1
+            for _ in range(max_new_tokens):
+                token = lc.llama_sampler_sample(chain, self.ctx, -1)
+                if token in (sp["eos"], sp["im_end"]):
+                    break
+                gb.token[0] = token
+                gb.pos[0] = cur
+                lc.llama_decode(self.ctx, gb)
+                stable.append(token)
+                if len(stable) > rollback_num:
+                    text_parts.append(self._detok(stable.pop(0)))
+                cur += 1
+                if len(stable) > 15 and len(set(stable[-15:])) <= 3:
+                    return DecodeResult("".join(text_parts), n, len(stable), is_aborted=True)
+        finally:
+            lc.llama_batch_free(gb)
+            lc.llama_sampler_free(chain)
         if is_last_chunk:
             while stable:
                 text_parts.append(self._detok(stable.pop(0)))
