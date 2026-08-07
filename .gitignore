@@ -6,3 +6,4 @@ dist/
 build/
 qwen3-asr-*.zip
 *.spec
+*.egg-info/
