@@ -92,7 +92,6 @@ dependencies = [
     "onnxruntime",
     "imageio-ffmpeg",
     "llama-cpp-python",
-    "gguf",
     "PyYAML",
 ]
 
@@ -968,36 +967,23 @@ class DecoderIntegrationTest(unittest.TestCase):
 
 - [ ] **Step 2: 运行确认失败/跳过**
 
-Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_decoder -v`
+Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models python -m unittest tests.test_decoder -v`
 Expected: 无模型 SKIPPED; 有模型 FAIL — `ModuleNotFoundError`
-
-- [ ] **Step 2b: 安装依赖**
-
-```bash
-.venv/Scripts/python -m pip install llama-cpp-python gguf --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-```
-注意: llama-cpp-python 的 Windows wheel 在 abetlen 官方索引(不在 PyPI)。pyproject.toml 依赖里已含 `gguf`(Task 1 计划已更新)。
 
 - [ ] **Step 3: 实现 decoder.py**
 
 ```python
 # q3asr/decoder.py
-"""GGUF decoder 推理(llama-cpp-python 底层 API, 喂入 embedding 序列)。
-
-针对 llama-cpp-python 0.3.34 的低层 API(已探针验证):
-- 0.3.34 把 vocab 从 model 分离: llama_tokenize / llama_token_to_piece / llama_token_eos
-  都收 llama_vocab_p(由 llama_model_get_vocab(model) 取得)。
-- 没有 llama_batch_set_embd / llama_batch_add / llama_model_eos / llama_model_embd_size;
-  改用直接填 llama_batch 结构体 + llama_decode。
-- token 嵌入表来自 GGUF token_embd.weight, 量化张量用 gguf.quants.dequantize 按需反量化。
-"""
-import ctypes
+"""GGUF decoder 推理(llama-cpp-python 底层 API, 喂入 embedding 序列)。"""
 import dataclasses
-
 import numpy as np
-import llama_cpp as lc
-from gguf import GGUFReader, GGMLQuantizationType
-from gguf.quants import dequantize, GGML_QUANT_SIZES
+
+import llama_cpp
+from llama_cpp import (llama_decode, llama_model_default_params,
+                       llama_new_context_with_model, llama_backend_init,
+                       llama_model_load_from_file, llama_batch_init,
+                       llama_batch_set_embd, llama_get_logits)
+from gguf import GGUFReader
 
 
 @dataclasses.dataclass
@@ -1008,84 +994,61 @@ class DecodeResult:
     is_aborted: bool = False
 
 
-class _TokenEmbeddingTable:
-    """GGUF token_embd.weight, 按 token 反量化。"""
-
-    def __init__(self, gguf_path):
-        reader = GGUFReader(str(gguf_path))
-        tensor = next(t for t in reader.tensors if t.name == "token_embd.weight")
-        self.qtype = GGMLQuantizationType(tensor.tensor_type)
-        n_embd = tensor.shape[0]
-        n_vocab = tensor.shape[1]
-        if self.qtype in (GGMLQuantizationType.F32, GGMLQuantizationType.F16):
-            self._raw = tensor.data.reshape(n_vocab, n_embd)
-            self._float = True
-        else:
-            bs, ts = GGML_QUANT_SIZES[self.qtype]
-            bpr = (n_embd // bs) * ts
-            self._raw = tensor.data.reshape(n_vocab, bpr)
-            self._float = False
-
-    def __call__(self, ids):
-        if self._float:
-            return np.ascontiguousarray(self._raw[list(ids)].astype(np.float32))
-        return np.ascontiguousarray(dequantize(self._raw[list(ids)], self.qtype.value),
-                                    dtype=np.float32)
-
-
-def _int_arr(n, vals):
-    return (lc.llama_token * n)(*vals)
+def _read_token_embeddings(gguf_path: str) -> np.ndarray:
+    """从 GGUF 读取 token 嵌入表 (vocab_size, D) f32。"""
+    reader = GGUFReader(gguf_path)
+    tensors = {t.name: t for t in reader.tensors}
+    emb_t = tensors["token_embd.weight"]
+    arr = emb_t.data.reshape(emb_t.shape)
+    return np.ascontiguousarray(arr, dtype=np.float32)
 
 
 class ASRDecoder:
     def __init__(self, gguf_path: str, n_ctx: int = 4096, n_batch: int = 4096):
-        lc.llama_backend_init()
-        self.model = lc.llama_model_load_from_file(str(gguf_path).encode("utf-8"),
-                                                   lc.llama_model_default_params())
-        if not self.model:
-            raise RuntimeError(f"failed to load GGUF model: {gguf_path}")
-        self.vocab = lc.llama_model_get_vocab(self.model)
-        self.n_embd = lc.llama_model_n_embd(self.model)
-        cparams = lc.llama_context_default_params()
-        cparams.n_ctx = n_ctx
-        cparams.n_batch = n_batch
-        self.ctx = lc.llama_new_context_with_model(self.model, cparams)
-        if not self.ctx:
-            raise RuntimeError("failed to create context")
-        self.emb_tbl = _TokenEmbeddingTable(gguf_path)
-        self.specials = {}
-        for key, text in (("im_start", "<|im_start|>"), ("im_end", "<|im_end|>"),
-                          ("audio_start", "<|audio_start|>"), ("audio_end", "<|audio_end|>"),
-                          ("asr_text", "<asr_text>")):
-            self.specials[key] = self.tokenize(text)[0]
-        self.specials["eos"] = lc.llama_token_eos(self.vocab)
+        llama_backend_init()
+        params = llama_model_default_params()
+        self.model = llama_model_load_from_file(gguf_path, params)
+        assert self.model, "failed to load GGUF model"
+        ctx_params = llama_cpp.llama_context_default_params()
+        ctx_params.n_ctx = n_ctx
+        ctx_params.n_batch = n_batch
+        self.ctx = llama_new_context_with_model(self.model, ctx_params)
+        assert self.ctx, "failed to create context"
+        self.embed_tbl = _read_token_embeddings(gguf_path)
+        self.vocab_size = self.embed_tbl.shape[0]
+        self.n_embd = self.embed_tbl.shape[1]
+        self._cache_ids()
+
+    def _cache_ids(self):
+        tok = lambda t: llama_cpp.llama_tokenize(
+            self.model, t.encode("utf-8"), len(t.encode("utf-8")), False, True, 1)
+        self.specials = {
+            "im_start": self._id("<|im_start|>", tok),
+            "im_end": self._id("<|im_end|>", tok),
+            "audio_start": self._id("<|audio_start|>", tok),
+            "audio_end": self._id("<|audio_end|>", tok),
+            "asr_text": self._id("<asr_text>", tok),
+            "eos": llama_cpp.llama_model_eos(self.model),
+        }
+
+    def _id(self, text, tok):
+        ids = tok(text)
+        return ids[0]
 
     def special_ids(self) -> dict:
         return dict(self.specials)
 
     def tokenize(self, text: str) -> list[int]:
         b = text.encode("utf-8")
-        buf = (lc.llama_token * 4096)()
-        n = lc.llama_tokenize(self.vocab, b, len(b), buf, 4096, True, True)
-        return list(buf[:n])
+        return list(llama_cpp.llama_tokenize(self.model, b, len(b), False, True, 1))
 
     def token_embeddings(self, ids: list[int]) -> np.ndarray:
-        return self.emb_tbl(ids)
-
-    def _detok(self, token: int) -> str:
-        buf = ctypes.create_string_buffer(64)
-        m = lc.llama_token_to_piece(self.vocab, token, buf, 64, 0, True)
-        return buf.raw[:m].decode("utf-8", errors="replace") if m > 0 else ""
-
-    def _new_chain(self, temperature, seed):
-        chain = lc.llama_sampler_chain_init(lc.llama_sampler_chain_default_params())
-        lc.llama_sampler_chain_add(chain, lc.llama_sampler_init_temp(temperature))
-        lc.llama_sampler_chain_add(chain, lc.llama_sampler_init_dist(seed))
-        return chain
+        return self.embed_tbl[ids]
 
     def decode_embeddings(self, embd, prefix_text, language=None, context="",
                           temperature=0.4, rollback_num=5,
                           is_last_chunk=False, max_new_tokens=512) -> DecodeResult:
+        # 1. 拼装 prompt embedding(参考 v0.1 asr.py::_build_prompt_embd 思路)
         sp = self.specials
         pre = ([sp["im_start"]] + self.tokenize(f"system\n{context or 'You are a helpful assistant.'}")
                + [sp["im_end"], sp["im_start"]] + self.tokenize("user\n") + [sp["audio_start"]])
@@ -1095,67 +1058,58 @@ class ASRDecoder:
         suf = [sp["audio_end"], sp["im_end"], sp["im_start"]] + self.tokenize(head) \
             + [sp["asr_text"]] + self.tokenize(prefix_text)
         full = np.concatenate([self.token_embeddings(pre), embd, self.token_embeddings(suf)], axis=0)
+
+        # 2. prefill
         n = full.shape[0]
+        batch = llama_batch_init(max(n * 4, 8192), 1, 1)
+        llama_batch_set_embd(batch, full, np.arange(n, dtype=np.int32), 0)
+        llama_decode(self.ctx, batch)
 
-        # prefill: embedding batch
-        batch = lc.llama_batch_init(n, 1, 1)
-        batch.n_tokens = n
-        batch.pos = ctypes.cast(_int_arr(n, range(n)), type(batch.pos))
-        batch.n_seq_id = ctypes.cast(_int_arr(n, [1] * n), type(batch.n_seq_id))
-        seq_arr = (ctypes.POINTER(lc.llama_token) * n)(
-            *(ctypes.cast(_int_arr(1, [0]), ctypes.POINTER(lc.llama_token)) for _ in range(n)))
-        batch.seq_id = ctypes.cast(seq_arr, type(batch.seq_id))
-        logits = (ctypes.c_byte * n)(*([0] * (n - 1) + [1]))
-        batch.logits = ctypes.cast(logits, type(batch.logits))
-        ptrs = (ctypes.POINTER(ctypes.c_float) * n)(
-            *(full[i].ctypes.data_as(ctypes.POINTER(ctypes.c_float)) for i in range(n)))
-        batch.embd = ctypes.cast(ptrs, type(batch.embd))
-        if lc.llama_decode(self.ctx, batch) != 0:
-            raise RuntimeError("prefill decode failed")
-
-        # generation
-        chain = self._new_chain(temperature, int(np.random.randint(0, 2 ** 31 - 1)))
-        text_parts = []
+        # 3. 自回归生成
+        text_out = ""
         stable = []
         cur = n
         for _ in range(max_new_tokens):
-            token = lc.llama_sampler_sample(chain, self.ctx, -1)
+            logits = llama_get_logits(self.ctx)  # (n_vocab,)
+            token = _argmax_with_temp(logits, temperature)
             if token in (sp["eos"], sp["im_end"]):
                 break
-            gb = lc.llama_batch_init(1, 0, 1)
-            gb.n_tokens = 1
-            gb.token = ctypes.cast(_int_arr(1, [token]), type(gb.token))
-            gb.pos = ctypes.cast(_int_arr(1, [cur]), type(gb.pos))
-            gb.n_seq_id = ctypes.cast(_int_arr(1, [1]), type(gb.n_seq_id))
-            gseq = (ctypes.POINTER(lc.llama_token) * 1)(
-                ctypes.cast(_int_arr(1, [0]), ctypes.POINTER(lc.llama_token)))
-            gb.seq_id = ctypes.cast(gseq, type(gb.seq_id))
-            glog = (ctypes.c_byte * 1)(1)
-            gb.logits = ctypes.cast(glog, type(gb.logits))
-            lc.llama_decode(self.ctx, gb)
+            b = llama_batch_init(1, 0, 1)
+            llama_cpp.llama_batch_add(b, token, cur, [0], True)
+            llama_decode(self.ctx, b)
             stable.append(token)
             if len(stable) > rollback_num:
-                text_parts.append(self._detok(stable.pop(0)))
+                text_out += self._detok(stable.pop(0))
             cur += 1
             if len(stable) > 15 and len(set(stable[-15:])) <= 3:
-                return DecodeResult("".join(text_parts), n, len(stable), is_aborted=True)
+                return DecodeResult(text_out, n, len(stable), is_aborted=True)
         if is_last_chunk:
             while stable:
-                text_parts.append(self._detok(stable.pop(0)))
-        return DecodeResult("".join(text_parts), n, len(stable), is_aborted=False)
+                text_out += self._detok(stable.pop(0))
+        return DecodeResult(text_out, n, len(stable), is_aborted=False)
+
+    def _detok(self, token: int) -> str:
+        raw = llama_cpp.llama_token_to_piece(self.ctx, token)
+        return raw.decode("utf-8", errors="replace")
+
+
+def _argmax_with_temp(logits: np.ndarray, temperature: float) -> int:
+    if temperature <= 0.0:
+        return int(np.argmax(logits))
+    p = np.exp((logits - logits.max()) / temperature)
+    p /= p.sum()
+    return int(np.random.choice(len(p), p=p))
 ```
 
 实现注意事项(必须满足):
-- 上面的代码是**控制器用 llama-cpp-python 0.3.34 探针验证过的实现**(加载 0.6b Q4_K 模型 → 喂 70 个 embedding 的 prefill rc=0 → 采样 → 生成 → 全部通过)。请**按此实现**, 不要退回手动 softmax。
-- `gguf` 包的 `GGML_QUANT_SIZES` 位于 `gguf.quants`(Q4_K: block 256, type 144); `dequantize(data, qtype.value)` 对 2D packed 字节反量化。
-- 跨平台: 数组一律用绑定自身的标量类型(`lc.llama_token` 等)+ `ctypes.cast(arr, type(batch.pos))`, 不要硬编码 c_int32。
-- `rollback_num` 语义与 v0.1 相同(延迟显示, 供熔断回滚); 此处简化(首版不追求流式显示, 只求正确性)。
-- 探针参考: `C:/Users/zwb/AppData/Local/Temp/opencode/probe_decoder.py`(可读, 但以上代码已并入)。
+- 上例 `llama_batch_set_embd` 与 `llama_batch_add` 的**精确签名以当前 llama-cpp-python 版本为准**; 若 API 名/参数有出入, 以实现环境实际 API 为准修正(高优先级), 并保持接口层(ASRDecoder 方法签名)不变。
+- 采样: 期望用 llama-cpp-python 的 sampler 链(如 `llama_sampler_chain_init`)而不是手动 softmax; 若底层 API 可用请优先用官方 sampler; 手动 softmax 仅作兜底。**结果质量以真实转录为准**。
+- `rollback_num` 语义与 v0.1 相同(延迟显示 token, 供"熔断回滚"使用); 此处简化为 text_out 立即拼接(首版不追求流式显示, 只求正确性)。**文档注释说明与 v0.1 的差异**。
 
 - [ ] **Step 4: 运行集成测试确认通过**
 
-Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_decoder -v`
-Expected: PASS(4 个测试)
+Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models python -m unittest tests.test_decoder -v`
+Expected: PASS(4 个测试; 若 API 名不对, 按实际 llama-cpp-python 版本修正)
 
 - [ ] **Step 5: 提交**
 
