@@ -1835,12 +1835,11 @@ from q3asr import cli
 
 class CliWiringTest(unittest.TestCase):
     def test_no_model_dir_returns_exit_3(self):
-        # 指定不存在的模型目录, 应走到模型加载并返回 3
-        rc = cli.main(["--model-dir", "/nonexistent/x", "--download-models-only"])
+        # 不存在的平铺模型目录 → resolve_paths 抛 DownloadError → 退出码 3
+        rc = cli.main(["--model-dir", "/nonexistent/x", "in.mp3", "-y"])
         self.assertEqual(rc, 3)
 
-    def test_download_models_only_flag_parses(self):
-        # 仅验证参数可解析(不触发真实下载, 因 --model-dir 不存在时直接退出)
+    def test_bad_flag_is_exit_code_2(self):
         with self.assertRaises(SystemExit) as ctx:
             cli.main(["--bogus"])
         self.assertEqual(ctx.exception.code, 2)
@@ -1853,7 +1852,7 @@ class CliWiringTest(unittest.TestCase):
         self.assertEqual(rc, 0)  # 本阶段 CLI 在无模型目录时打印并返回 0? 否——见下
 ```
 
-注: CLI 接线后, `in.mp3` 且默认 `--model-dir` 不存在时, 应触发模型下载流程(`--download-models-only` 之外的正常路径会 ensure_models → 尝试联网)。因此 `test_device_and_prec_accepted` 应改为断言**参数被接受且流程进入模型检查**(例如构造 `--model-dir /nonexistent` 期望退出码 3, 或 mock `ensure_models`)。实现时按此修正, 避免测试触发真实下载。
+注: 接线后正常路径 `--model-dir /nonexistent` 应返回退出码 3(模型缺失), 不触发网络下载(平铺目录校验)。
 
 - [ ] **Step 2: 运行确认失败**
 
@@ -1900,8 +1899,7 @@ def main(argv=None) -> int:
         device = backend_mod.detect_backend(args.device)
         print(f"[INFO] backend: {device}")
         if args.download_models_only:
-            models_mod.ensure_models(model=args.model,
-                                     model_dir=Path(args.model_dir) if args.model_dir else None)
+            models_mod.ensure_models(model=args.model)
             print("[INFO] models ready")
             return 0
         if not args.input:
@@ -1909,9 +1907,9 @@ def main(argv=None) -> int:
             return 2
         from q3asr.engine import TranscribeEngine
         from q3asr import output
-        model_dir = models_mod.ensure_models(
+        paths = models_mod.resolve_paths(
             model=args.model, model_dir=Path(args.model_dir) if args.model_dir else None)
-        eng = TranscribeEngine({"model_dir": str(model_dir), "device": device})
+        eng = TranscribeEngine({"paths": paths, "device": device})
         res = eng.transcribe(args.input, language=args.language,
                              start_second=args.seek_start, duration=args.duration)
         base = Path(args.input).with_suffix("")
