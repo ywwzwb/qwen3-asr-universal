@@ -184,3 +184,33 @@ class ASRDecoder:
             while stable:
                 text_parts.append(self._detok(stable.pop(0)))
         return DecodeResult("".join(text_parts), n, len(stable), is_aborted=False)
+
+    def prefill_logits(self, full_embd: np.ndarray, positions: list[int]) -> np.ndarray:
+        """单次前向, 返回序列索引 positions 处 token 的 logits 行 (K, n_vocab)。"""
+        n = full_embd.shape[0]
+        lc.llama_memory_clear(lc.llama_get_memory(self.ctx), True)
+        batch = lc.llama_batch_init(4 * n, self.n_embd, 1)
+        try:
+            batch.n_tokens = n
+            pos_arr = np.concatenate([np.arange(n, dtype=np.int32),
+                                      np.arange(n, dtype=np.int32),
+                                      np.arange(n, dtype=np.int32),
+                                      np.zeros(n, dtype=np.int32)])
+            ctypes.memmove(batch.pos, pos_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+                           4 * n * ctypes.sizeof(ctypes.c_int32))
+            for i in range(n):
+                batch.n_seq_id[i] = 1
+                batch.seq_id[i][0] = 0
+                batch.logits[i] = 0
+            for p in positions:
+                batch.logits[p] = 1
+            ctypes.memmove(batch.embd, np.ascontiguousarray(full_embd).ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                           n * self.n_embd * ctypes.sizeof(ctypes.c_float))
+            if lc.llama_decode(self.ctx, batch) != 0:
+                raise RuntimeError("prefill decode failed")
+            n_vocab = lc.llama_n_vocab(self.vocab)
+            rows = [np.ctypeslib.as_array(lc.llama_get_logits_ith(self.ctx, p), shape=(n_vocab,))
+                    for p in positions]
+        finally:
+            lc.llama_batch_free(batch)
+        return np.asarray(rows, dtype=np.float32)
