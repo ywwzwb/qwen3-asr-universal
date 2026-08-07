@@ -1,0 +1,64 @@
+# .github/workflows/release.yml
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, arch: x64, backend: cpu}
+          - {os: windows-latest, arch: x64, backend: cuda}
+          - {os: windows-latest, arch: x64, backend: vulkan}
+          - {os: ubuntu-latest,  arch: x64, backend: cpu}
+          - {os: ubuntu-latest,  arch: x64, backend: cuda}
+          - {os: ubuntu-latest,  arch: x64, backend: vulkan}
+          - {os: macos-14,       arch: arm64, backend: metal}
+          - {os: macos-14,       arch: arm64, backend: cpu}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e .
+      - name: Build
+        run: python ci/build.py ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'ubuntu-latest' && 'linux' || 'macos' }}-${{ matrix.arch }}-${{ matrix.backend }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zip-${{ matrix.os }}-${{ matrix.backend }}
+          path: qwen3-asr-*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: zip-*
+          merge-multiple: true
+          path: zips
+      - name: Build root manifest
+        shell: python
+        run: |
+          import hashlib, json, pathlib
+          assets = []
+          for p in sorted(pathlib.Path("zips").glob("qwen3-asr-*.zip")):
+              m = json.loads((pathlib.Path("zips") / p.stem).read_text() if False else None) if False else None
+              parts = p.name.replace("qwen3-asr-", "").replace(".zip", "").split("-")
+              os_n, arch, backend = parts[0], parts[1], "-".join(parts[2:])
+              assets.append({"os": os_n, "arch": arch, "backend": backend,
+                             "filename": p.name,
+                             "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+                             "size": p.stat().st_size,
+                             "cli": "q3asr.exe" if os_n == "windows" else "q3asr"})
+          root = {"version": "${{ github.ref_name }}", "assets": assets}
+          pathlib.Path("zips/manifest.json").write_text(json.dumps(root, indent=2))
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zips/*
