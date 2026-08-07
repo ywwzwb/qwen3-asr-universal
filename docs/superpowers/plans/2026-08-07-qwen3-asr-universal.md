@@ -2013,14 +2013,15 @@ def main(target: str):
     if target not in TARGETS:
         sys.exit(f"unknown target {target}; choose from {sorted(TARGETS)}")
     t = TARGETS[target]
-    extra = []
-    if t["llama"][1]:
-        extra = ["--index-url", "https://abetlen.github.io/llama-cpp-python/whl/" + t["llama"][1]]
+    backend = t["llama"][1] or "cpu"
+    # 命令1: 纯 PyPI(pyinstaller/onnxruntime 各后端 wheel 都在 PyPI)
     subprocess.run([sys.executable, "-m", "pip", "install",
-                    "pyinstaller", t["onnx"], *extra], check=True)
-    subprocess.run([sys.executable, "-m", "pip", "install",
-                    f'llama-cpp-python[{t["llama"][1]}]' if t["llama"][1] else "llama-cpp-python",
-                    *extra], check=True)
+                    "pyinstaller", t["onnx"]], check=True)
+    # 命令2: llama-cpp-python 专用 abetlen 后端索引(独占 --index-url,
+    # 避免 pip 从 PyPI 拿到 CPU wheel; whl/<backend> 目录含该后端 wheel)
+    subprocess.run([sys.executable, "-m", "pip", "install", "llama-cpp-python",
+                    "--index-url", "https://abetlen.github.io/llama-cpp-python/whl/" + backend],
+                   check=True)
 
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name", "q3asr",
            "--collect-all", "imageio_ffmpeg",
