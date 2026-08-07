@@ -31,14 +31,12 @@ def main(target: str):
     if target not in TARGETS:
         sys.exit(f"unknown target {target}; choose from {sorted(TARGETS)}")
     t = TARGETS[target]
-    extra = []
-    if t["llama"][1]:
-        extra = ["--index-url", "https://abetlen.github.io/llama-cpp-python/whl/" + t["llama"][1]]
+    backend = t["llama"][1] or "cpu"
     subprocess.run([sys.executable, "-m", "pip", "install",
-                    "pyinstaller", t["onnx"], *extra], check=True)
-    subprocess.run([sys.executable, "-m", "pip", "install",
-                    f'llama-cpp-python[{t["llama"][1]}]' if t["llama"][1] else "llama-cpp-python",
-                    *extra], check=True)
+                    "pyinstaller", t["onnx"]], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "llama-cpp-python",
+                    "--index-url", "https://abetlen.github.io/llama-cpp-python/whl/" + backend],
+                   check=True)
 
     data_sep = ";" if sys.platform.startswith("win") else ":"
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name", "q3asr",
