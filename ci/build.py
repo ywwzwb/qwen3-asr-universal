@@ -43,6 +43,7 @@ def main(target: str):
     data_sep = ";" if sys.platform.startswith("win") else ":"
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name", "q3asr",
            "--collect-all", "imageio_ffmpeg",
+           "--collect-all", "llama_cpp",
            f"--add-data=resources{data_sep}resources",
            "q3asr/__main__.py"]
     subprocess.run(cmd, check=True)
