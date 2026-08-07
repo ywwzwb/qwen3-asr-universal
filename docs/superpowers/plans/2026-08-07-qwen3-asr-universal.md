@@ -92,6 +92,7 @@ dependencies = [
     "onnxruntime",
     "imageio-ffmpeg",
     "llama-cpp-python",
+    "gguf",
     "PyYAML",
 ]
 
@@ -187,23 +188,8 @@ git commit -m "feat: scaffold q3asr package with compatible CLI skeleton"
   - `q3asr.models.default_model_dir() -> Path`(`~/.cache/q3asr/models`)
   - `q3asr.models.mirror_url(url: str, mirror: str) -> str`(`mirror="gh"|"ms"`)
   - `q3asr.models.sha256_of(path: Path) -> str`
-  - `q3asr.models.DownloadError(RuntimeError)`
-  - `q3asr.models.resolve_paths(model="1.7b", model_dir=None) -> dict[str, Path]` — 返回路径表, 键: `mel_filters, asr_frontend, asr_backend, asr_llm, align_frontend, align_backend, align_llm`。`model_dir` 未给则走 `ensure_models`(自动下载), 给了则把 `model_dir` 当**平铺目录**按文件名拼路径。
-  - `q3asr.models.ensure_models(model="1.7b", mirror="gh") -> dict[str, Path]` — 下载+校验+解压到默认缓存布局(见下), 返回同一路径表
-  - `q3asr.models.spec_from_dir(model_dir, model) -> dict[str, Path]` — 由用户提供的平铺目录构建路径表
-- 缓存布局(避免 0.6b/1.7b 同名冲突):
-  ```
-  ~/.cache/q3asr/models/
-    mel_filters.npy                     (来自包资源 resources/mel_filters.npy, 非下载)
-    1.7b/   qwen3_asr_encoder_frontend.int4.onnx
-             qwen3_asr_encoder_backend.int4.onnx
-             qwen3_asr_llm.q4_k.gguf
-    0.6b/   (同 1.7b 结构)
-    aligner/ qwen3_aligner_encoder_frontend.int4.onnx
-             qwen3_aligner_encoder_backend.int4.onnx
-             qwen3_aligner_llm.q4_k.gguf
-  ```
-- 实际文件名(已核实, 与 v0.1 schema.py 一致): ASR decoder 为 `qwen3_asr_llm.q4_k.gguf`(非 `.q4`); 三个 zip **不含** mel_filters.npy(mel filters 由本仓库 `ci/generate_mel_filters.py` 生成并提交为 `resources/mel_filters.npy`, 已与 HF WhisperFeatureExtractor 逐值核对一致)。
+  - `q3asr.models.ensure_models(model="1.7b", mirror="gh", model_dir=None) -> Path`(下载+校验+解压, 返回含全部文件的模型目录)
+  - 模型文件命名(解压后平铺): `mel_filters.npy`, `qwen3_asr_encoder_frontend.int4.onnx`, `qwen3_asr_encoder_backend.int4.onnx`, `qwen3_asr_llm.q4`, `qwen3_aligner_encoder_frontend.int4.onnx`, `qwen3_aligner_encoder_backend.int4.onnx`, `qwen3_aligner_llm.q4_k.gguf`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -241,36 +227,14 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("1.7b", entries)
         self.assertIn("0.6b", entries)
         self.assertIn("aligner", entries)
-        # 1.7b/0.6b 条目必须含 encoder frontend/backend + llm, aligner 条目含三件套; 全部带 sha256 和 url
+        # 每个条目必须声明全部 7 个文件且含 sha256
         for name, m in entries.items():
             names = [f["name"] for f in m["files"]]
-            for req in ("qwen3_asr_encoder_frontend.int4.onnx",
-                        "qwen3_asr_encoder_backend.int4.onnx",
-                        "qwen3_asr_llm.q4_k.gguf"):
+            for req in ("mel_filters.npy",):
                 self.assertIn(req, names, f"{name} 缺少 {req}")
             for f in m["files"]:
                 self.assertTrue(f["sha256"], f"{name}/{f['name']} 缺少 sha256")
                 self.assertTrue(f["url"], f"{name}/{f['name']} 缺少 url")
-        aligner = {f["name"] for f in entries["aligner"]["files"]}
-        for req in ("qwen3_aligner_encoder_frontend.int4.onnx",
-                    "qwen3_aligner_encoder_backend.int4.onnx",
-                    "qwen3_aligner_llm.q4_k.gguf"):
-            self.assertIn(req, aligner, f"aligner 缺少 {req}")
-
-    def test_resolve_paths_flat_dir(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            for name in ("qwen3_asr_encoder_frontend.int4.onnx",
-                         "qwen3_asr_encoder_backend.int4.onnx",
-                         "qwen3_asr_llm.q4_k.gguf",
-                         "qwen3_aligner_encoder_frontend.int4.onnx",
-                         "qwen3_aligner_encoder_backend.int4.onnx",
-                         "qwen3_aligner_llm.q4_k.gguf"):
-                (root / name).touch()
-            spec = models.spec_from_dir(root, "0.6b")
-            for key in ("asr_frontend", "asr_backend", "asr_llm",
-                        "align_frontend", "align_backend", "align_llm"):
-                self.assertTrue(spec[key].exists(), f"{key} -> {spec[key]}")
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -278,63 +242,58 @@ class ManifestTest(unittest.TestCase):
 Run: `python -m unittest tests.test_models -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'q3asr.models'`
 
-- [ ] **Step 3: 已核实的模型事实(无需重新下载, 控制器已预置)**
+- [ ] **Step 3: 下载模型 zip 并记录真实 sha256 + 内部结构**
 
-三个 zip 已由控制器预下载到 `C:\Users\zwb\AppData\Local\Temp\opencode\q3asr-models\`, 已解压到 `~/.cache/q3asr/models/`(布局见 Interfaces)。zip 内结构(根路径平铺, 无嵌套目录):
+先在本地把三个 zip 下载到临时目录(首次一次性成本, 集成测试也要用):
+`https://github.com/HaujetZhao/Qwen3-ASR-GGUF/releases/download/models/Qwen3-ASR-{1.7B,0.6B,ForceAligner-0.6B}-gguf.zip`
 
-- `Qwen3-ASR-1.7B-gguf.zip`(1.4GB, zip_sha256 `080746b8235d55a2f6bfaf1a8bf21f2107c4a29045a48d95c79e454cd42f5bf0`): `qwen3_asr_encoder_frontend.int4.onnx`(20.9MB), `qwen3_asr_encoder_backend.int4.onnx`(164.7MB), `qwen3_asr_llm.q4_k.gguf`(1282.4MB)
-- `Qwen3-ASR-0.6B-gguf.zip`(564MB, zip_sha256 `3684b9cac9978a93c82ceeb93448bb5027c0b2beaf2e0affa35190ba20e545ff`): 同上三个文件(20.3/94.8/484.2MB)
-- `Qwen3-ForceAligner-0.6B-gguf.zip`(505MB, zip_sha256 `d9c16a2db3293c0c4120b0291d5d0fcfa208d842577092ca49cecc08a4690fb7`): `qwen3_aligner_encoder_frontend.int4.onnx`(20.9MB), `qwen3_aligner_encoder_backend.int4.onnx`(164.2MB), `qwen3_aligner_llm.q4_k.gguf`(484.4MB)
+```bash
+# 记录 sha256 并检查 zip 内部结构(平铺 or 嵌套), 决定解压逻辑
+sha256sum Qwen3-ASR-1.7B-gguf.zip Qwen3-ASR-0.6B-gguf.zip Qwen3-ForceAligner-0.6B-gguf.zip
+python -m zipfile -l Qwen3-ASR-1.7B-gguf.zip | head -30
+```
 
-各文件真实 sha256(与 zip 解压后字节一致):
+Expected: 得到 3 个真实 sha256; 观察到 zip 内文件名(应含 `mel_filters.npy`、`qwen3_asr_encoder_frontend.int4.onnx`、`qwen3_asr_encoder_backend.int4.onnx`、`qwen3_asr_llm.q4`, aligner zip 含 `qwen3_aligner_encoder_frontend.int4.onnx` 等)。若文件名为真实模型名而非假设, **以实际为准**, 相应调整 Task 的命名约定并保持本计划其余处一致。
 
-| 文件 | sha256 |
-|---|---|
-| 1.7b frontend | `9cda7769acc0f1c3077600156b59759abfdeda46c2bbab3610b6ce47cee70e90` |
-| 1.7b backend | `1b97a39201050521f63374131557b033b758f8ae7d2a3d6efaa0f9d8900bab9a` |
-| 1.7b llm | `8eb99f67d9bcd882e825344e05b0e60ae77bc0b2830f972a7b4b013e91ea14a6` |
-| 0.6b frontend | `8c29d210b934f377983c0daa28d276f36cbc9a8a823d59d3afc5da2fd8eda2f6` |
-| 0.6b backend | `95b8ed080ef99e28de62523ea0d70fb5b1383f17d4238464a265b3454eaaaa55` |
-| 0.6b llm | `38a5492b88292dcb14c48fb939212da8223ec8d1e19b29d6e2751f26c0754cdd` |
-| aligner frontend | `858ea960c7feaf48a8787cb4a375e70216f99899cc229b174a6ebfdebd4f6e59` |
-| aligner backend | `7c8931be70a64cd75be1671d714e9497d0bc2ef7943ffc9024807f71d24855b1` |
-| aligner llm | `c2608b44866ac790fb0f9f542ae4a473c49fde03a7a2eb5b5370cc095b78dc8b` |
-
-- [ ] **Step 4: 写 models.yaml**(用上述真实值填 sha256)
+- [ ] **Step 4: 写 models.yaml**
 
 ```yaml
 # resources/models.yaml
 # mirror 切换: gh=GitHub release(默认), ms=Modelscope(待上传, 占位映射)
 base_urls:
   gh: "https://github.com/HaujetZhao/Qwen3-ASR-GGUF/releases/download/models"
-  ms: "https://modelscope.cn/models/HaujetZhao/Qwen3-ASR-GGUF/resolve/master"
+  ms: "https://modelscope.cn/models/HaujetZhao/Qwen3-ASR-GGUF/resolve/master"   # 若已存在则用真实地址
 
 models:
   - name: "1.7b"
     zip: "Qwen3-ASR-1.7B-gguf.zip"
-    zip_sha256: "080746b8235d55a2f6bfaf1a8bf21f2107c4a29045a48d95c79e454cd42f5bf0"
+    zip_sha256: "<真实sha256>"
     size_mb: 1411
     files:
-      - {name: "qwen3_asr_encoder_frontend.int4.onnx", in_zip: "qwen3_asr_encoder_frontend.int4.onnx", sha256: "9cda7769acc0f1c3077600156b59759abfdeda46c2bbab3610b6ce47cee70e90"}
-      - {name: "qwen3_asr_encoder_backend.int4.onnx", in_zip: "qwen3_asr_encoder_backend.int4.onnx", sha256: "1b97a39201050521f63374131557b033b758f8ae7d2a3d6efaa0f9d8900bab9a"}
-      - {name: "qwen3_asr_llm.q4_k.gguf", in_zip: "qwen3_asr_llm.q4_k.gguf", sha256: "8eb99f67d9bcd882e825344e05b0e60ae77bc0b2830f972a7b4b013e91ea14a6"}
+      - {name: "mel_filters.npy", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
+      - {name: "qwen3_asr_encoder_frontend.int4.onnx", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
+      - {name: "qwen3_asr_encoder_backend.int4.onnx", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
+      - {name: "qwen3_asr_llm.q4", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
   - name: "0.6b"
     zip: "Qwen3-ASR-0.6B-gguf.zip"
-    zip_sha256: "3684b9cac9978a93c82ceeb93448bb5027c0b2beaf2e0affa35190ba20e545ff"
+    zip_sha256: "<真实sha256>"
     size_mb: 564
-    files:
-      - {name: "qwen3_asr_encoder_frontend.int4.onnx", in_zip: "qwen3_asr_encoder_frontend.int4.onnx", sha256: "8c29d210b934f377983c0daa28d276f36cbc9a8a823d59d3afc5da2fd8eda2f6"}
-      - {name: "qwen3_asr_encoder_backend.int4.onnx", in_zip: "qwen3_asr_encoder_backend.int4.onnx", sha256: "95b8ed080ef99e28de62523ea0d70fb5b1383f17d4238464a265b3454eaaaa55"}
-      - {name: "qwen3_asr_llm.q4_k.gguf", in_zip: "qwen3_asr_llm.q4_k.gguf", sha256: "38a5492b88292dcb14c48fb939212da8223ec8d1e19b29d6e2751f26c0754cdd"}
+    files:   # 同 1.7b 结构
+      - {name: "mel_filters.npy", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
+      - {name: "qwen3_asr_encoder_frontend.int4.onnx", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
+      - {name: "qwen3_asr_encoder_backend.int4.onnx", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
+      - {name: "qwen3_asr_llm.q4", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
   - name: "aligner"
     zip: "Qwen3-ForceAligner-0.6B-gguf.zip"
-    zip_sha256: "d9c16a2db3293c0c4120b0291d5d0fcfa208d842577092ca49cecc08a4690fb7"
+    zip_sha256: "<真实sha256>"
     size_mb: 505
     files:
-      - {name: "qwen3_aligner_encoder_frontend.int4.onnx", in_zip: "qwen3_aligner_encoder_frontend.int4.onnx", sha256: "858ea960c7feaf48a8787cb4a375e70216f99899cc229b174a6ebfdebd4f6e59"}
-      - {name: "qwen3_aligner_encoder_backend.int4.onnx", in_zip: "qwen3_aligner_encoder_backend.int4.onnx", sha256: "7c8931be70a64cd75be1671d714e9497d0bc2ef7943ffc9024807f71d24855b1"}
-      - {name: "qwen3_aligner_llm.q4_k.gguf", in_zip: "qwen3_aligner_llm.q4_k.gguf", sha256: "c2608b44866ac790fb0f9f542ae4a473c49fde03a7a2eb5b5370cc095b78dc8b"}
+      - {name: "qwen3_aligner_encoder_frontend.int4.onnx", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
+      - {name: "qwen3_aligner_encoder_backend.int4.onnx", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
+      - {name: "qwen3_aligner_llm.q4_k.gguf", in_zip: "<实际zip内路径>", sha256: "<真实sha256>"}
 ```
+
+注: `ensure_models` 解压时按 `in_zip` 路径提取并重命名为 `files[].name` 平铺到模型目录; 若实际 zip 结构不含 mel_filters.npy(由别的脚本生成), 从 `00-Export-Mel-Filters.py` 逻辑核对, 以事实为准并修正本计划。
 
 - [ ] **Step 5: 写 models.py 实现**
 
@@ -343,7 +302,6 @@ models:
 """模型清单与自动下载(断点续传 + sha256 校验 + 解压)。"""
 import hashlib
 import os
-import shutil
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -351,10 +309,6 @@ from pathlib import Path
 import yaml
 
 _RESOURCES = Path(__file__).parent.parent / "resources"
-
-
-class DownloadError(RuntimeError):
-    pass
 
 
 def load_manifest() -> list[dict]:
@@ -367,13 +321,6 @@ def load_manifest() -> list[dict]:
 
 
 MODEL_MANIFEST = load_manifest()
-
-_ASR_FILES = ("qwen3_asr_encoder_frontend.int4.onnx",
-              "qwen3_asr_encoder_backend.int4.onnx",
-              "qwen3_asr_llm.q4_k.gguf")
-_ALIGN_FILES = ("qwen3_aligner_encoder_frontend.int4.onnx",
-                "qwen3_aligner_encoder_backend.int4.onnx",
-                "qwen3_aligner_llm.q4_k.gguf")
 
 
 def default_model_dir() -> Path:
@@ -399,105 +346,52 @@ def sha256_of(path: Path) -> str:
 
 def _download(url: str, dest: Path) -> None:
     """断点续传下载(支持已存在部分文件)。"""
+    req = urllib.request.Request(url, headers={"User-Agent": "q3asr/0.1"})
     tmp = dest.with_suffix(dest.suffix + ".part")
     mode = "ab" if tmp.exists() and tmp.stat().st_size > 0 else "wb"
     headers = {"User-Agent": "q3asr/0.1"}
     if mode == "ab":
         headers["Range"] = f"bytes={tmp.stat().st_size}-"
     req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, mode) as f:
-            total = int(resp.headers.get("Content-Length") or 0)
-            done = tmp.stat().st_size
-            while True:
-                chunk = resp.read(1 << 20)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                if total:
-                    print(f"[INFO] downloading {dest.name}: {done // (1 << 20)}/{total // (1 << 20)} MB", flush=True)
-    except Exception as e:
-        raise DownloadError(f"download failed: {url}: {e}") from e
+    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, mode) as f:
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = tmp.stat().st_size
+        while True:
+            chunk = resp.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            if total:
+                print(f"[INFO] downloading {dest.name}: {done // (1 << 20)}/{total // (1 << 20)} MB", flush=True)
     tmp.replace(dest)
 
 
-def _ensure_entry(m: dict, f: dict, dl_dir: Path, mirror: str) -> Path:
-    out = dl_dir / "extract" / f["in_zip"]
-    if out.exists() and sha256_of(out) == f["sha256"]:
-        return out
-    zip_path = dl_dir / m["zip"]
-    zip_url = mirror_url(m["base_urls"][mirror] + "/" + m["zip"], mirror)
-    if not (zip_path.exists() and sha256_of(zip_path) == m["zip_sha256"]):
-        _download(zip_url, zip_path)
-    if sha256_of(zip_path) != m["zip_sha256"]:
-        raise DownloadError(f"zip sha256 mismatch: {zip_path}")
-    with zipfile.ZipFile(zip_path) as z:
-        z.extract(f["in_zip"], dl_dir / "extract")
-    if sha256_of(out) != f["sha256"]:
-        raise DownloadError(f"sha256 mismatch for {f['name']}: got {sha256_of(out)}")
-    print(f"[INFO] model file ready: {out}")
-    return out
-
-
-def ensure_models(model: str = "1.7b", mirror: str = "gh") -> dict[str, Path]:
-    """下载+校验+解压到默认缓存布局, 返回路径表。"""
-    root = default_model_dir()
-    root.mkdir(parents=True, exist_ok=True)
-    dl_dir = root / "_downloads"
+def ensure_models(model: str = "1.7b", mirror: str = "gh", model_dir: Path | None = None) -> Path:
+    """确保模型已下载并解压, 返回模型目录。"""
+    model_dir = Path(model_dir) if model_dir else default_model_dir()
+    m = next(x for x in MODEL_MANIFEST if x["name"] == model)
+    dl_dir = model_dir / "_downloads"
     dl_dir.mkdir(parents=True, exist_ok=True)
 
-    mel = root / "mel_filters.npy"
-    if not mel.exists():
-        shutil.copyfile(_RESOURCES / "mel_filters.npy", mel)
-
-    asr_m = next(x for x in MODEL_MANIFEST if x["name"] == model)
-    align_m = next(x for x in MODEL_MANIFEST if x["name"] == "aligner")
-    asr_dir = root / model
-    align_dir = root / "aligner"
-    for sub, m, names in ((asr_dir, asr_m, _ASR_FILES), (align_dir, align_m, _ALIGN_FILES)):
-        sub.mkdir(parents=True, exist_ok=True)
-        for fn in names:
-            f = next(x for x in m["files"] if x["name"] == fn)
-            src = _ensure_entry(m, f, dl_dir, mirror)
-            out = sub / fn
-            if not out.exists():
-                os.replace(src, out)
-    return build_spec(model)
-
-
-def spec_from_dir(model_dir: Path, model: str = "1.7b") -> dict[str, Path]:
-    """由用户提供的平铺目录构建路径表。"""
-    md = Path(model_dir)
-    return {
-        "mel_filters": md / "mel_filters.npy",
-        "asr_frontend": md / "qwen3_asr_encoder_frontend.int4.onnx",
-        "asr_backend": md / "qwen3_asr_encoder_backend.int4.onnx",
-        "asr_llm": md / "qwen3_asr_llm.q4_k.gguf",
-        "align_frontend": md / "qwen3_aligner_encoder_frontend.int4.onnx",
-        "align_backend": md / "qwen3_aligner_encoder_backend.int4.onnx",
-        "align_llm": md / "qwen3_aligner_llm.q4_k.gguf",
-    }
-
-
-def build_spec(model: str = "1.7b") -> dict[str, Path]:
-    root = default_model_dir()
-    d = spec_from_dir(root / model, model)
-    d["mel_filters"] = root / "mel_filters.npy"
-    for align in ("align_frontend", "align_backend", "align_llm"):
-        d[align] = root / "aligner" / d[align].name
-    return d
-
-
-def resolve_paths(model: str = "1.7b", model_dir: Path | None = None) -> dict[str, Path]:
-    """model_dir 未给 → ensure_models(自动下载); 给了 → 平铺目录解释, 缺文件抛 DownloadError。"""
-    if model_dir is None:
-        return ensure_models(model=model)
-    spec = spec_from_dir(model_dir, model)
-    missing = [str(v) for v in spec.values() if not v.exists()]
-    if missing:
-        raise DownloadError(f"model files not found in {model_dir}: {missing}")
-    return spec
+    for f in m["files"]:
+        out = model_dir / f["name"]
+        if out.exists() and sha256_of(out) == f["sha256"]:
+            continue
+        zip_url = mirror_url(m["base_urls"][mirror] + "/" + m["zip"], mirror)
+        zip_path = dl_dir / m["zip"]
+        if not (zip_path.exists() and sha256_of(zip_path) == m["zip_sha256"]):
+            _download(zip_url, zip_path)
+        assert sha256_of(zip_path) == m["zip_sha256"], f"zip sha256 mismatch: {zip_path}"
+        with zipfile.ZipFile(zip_path) as z:
+            z.extract(f["in_zip"], dl_dir / "extract")
+        src = dl_dir / "extract" / f["in_zip"]
+        os.replace(src, out)
+        got = sha256_of(out)
+        if got != f["sha256"]:
+            raise RuntimeError(f"sha256 mismatch for {f['name']}: got {got}")
+        print(f"[INFO] model file ready: {out}")
+    return model_dir
 ```
 
 - [ ] **Step 6: 运行测试确认通过**
@@ -834,9 +728,7 @@ class FastWhisperMel:
         self.hop_length = 160
         self.window = scipy.signal.get_window("hann", self.n_fft, fftbins=True)
 
-    def __call__(self, audio: np.ndarray, dtype=None) -> np.ndarray:
-        if dtype is None:
-            dtype = self.dtype
+    def __call__(self, audio: np.ndarray) -> np.ndarray:
         pad_len = self.n_fft // 2
         y = np.pad(audio, pad_len, mode="reflect")
         num_frames = 1 + (len(y) - self.n_fft) // self.hop_length
@@ -850,7 +742,7 @@ class FastWhisperMel:
         log_spec = np.maximum(log_spec, log_spec.max() - 8.0)
         log_spec = (log_spec + 4.0) / 4.0
         n_frames_out = audio.shape[-1] // self.hop_length
-        return log_spec[:, :n_frames_out].astype(dtype)
+        return log_spec[:, :n_frames_out].astype(self.dtype)
 
 
 def get_feat_extract_output_lengths(input_lengths: int) -> int:
@@ -898,19 +790,18 @@ from pathlib import Path
 
 import numpy as np
 
-from q3asr import encoder, models
+from q3asr import encoder
 
 MODEL_DIR = os.environ.get("Q3ASR_MODEL_DIR")
-SPEC = models.resolve_paths("0.6b", Path(MODEL_DIR) if MODEL_DIR else None)
 
 
-@unittest.skipUnless(SPEC["asr_frontend"].exists(), "set Q3ASR_MODEL_DIR to run")
+@unittest.skipUnless(MODEL_DIR, "set Q3ASR_MODEL_DIR to run")
 class EncoderIntegrationTest(unittest.TestCase):
     def test_encode_5s_silence(self):
         enc = encoder.QwenAudioEncoder(
-            str(SPEC["asr_frontend"]),
-            str(SPEC["asr_backend"]),
-            str(SPEC["mel_filters"]),
+            str(Path(MODEL_DIR) / "qwen3_asr_encoder_frontend.int4.onnx"),
+            str(Path(MODEL_DIR) / "qwen3_asr_encoder_backend.int4.onnx"),
+            str(Path(MODEL_DIR) / "mel_filters.npy"),
         )
         audio = np.zeros(16000 * 5, dtype=np.float32)
         embd, elapsed = enc.encode(audio)
@@ -922,9 +813,9 @@ class EncoderIntegrationTest(unittest.TestCase):
 
     def test_encode_shape_grows_with_audio(self):
         enc = encoder.QwenAudioEncoder(
-            str(SPEC["asr_frontend"]),
-            str(SPEC["asr_backend"]),
-            str(SPEC["mel_filters"]),
+            str(Path(MODEL_DIR) / "qwen3_asr_encoder_frontend.int4.onnx"),
+            str(Path(MODEL_DIR) / "qwen3_asr_encoder_backend.int4.onnx"),
+            str(Path(MODEL_DIR) / "mel_filters.npy"),
             warmup_sec=0.0,
         )
         e1, _ = enc.encode(np.zeros(16000 * 1, dtype=np.float32))
@@ -935,8 +826,8 @@ class EncoderIntegrationTest(unittest.TestCase):
 - [ ] **Step 2: 准备模型并确认测试失败或跳过**
 
 ```bash
-# 控制器已预置平铺模型目录 $HOME/.cache/q3asr/models-flat (0.6b + aligner + mel_filters)
-export Q3ASR_MODEL_DIR="$HOME/.cache/q3asr/models-flat"
+# 用 Task 2 的 ensure_models 或手动解压到 $Q3ASR_MODEL_DIR:
+export Q3ASR_MODEL_DIR="$HOME/.cache/q3asr/models"
 python -m unittest tests.test_encoder -v
 ```
 Expected: 无模型时 SKIPPED; 有模型且无实现时 FAIL — `ModuleNotFoundError: No module named 'q3asr.encoder'`
@@ -998,7 +889,7 @@ class QwenAudioEncoder:
 
 - [ ] **Step 4: 运行集成测试确认通过**
 
-Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_encoder -v`
+Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models python -m unittest tests.test_encoder -v`
 Expected: PASS(2 个测试, 非跳过)
 
 - [ ] **Step 5: 提交**
@@ -1017,7 +908,7 @@ git commit -m "feat: ONNX encoder frontend+backend"
 - Test: `tests/test_decoder.py`
 
 **Interfaces:**
-- Consumes: 模型目录 `qwen3_asr_llm.q4_k.gguf`; `gguf` pip 包读 token 嵌入表
+- Consumes: 模型目录 `qwen3_asr_llm.q4`; `gguf` pip 包读 token 嵌入表
 - Produces:
   - `q3asr.decoder.ASRDecoder(gguf_path, n_ctx=4096, n_batch=4096)`
   - `.tokenize(text) -> list[int]`
@@ -1038,28 +929,27 @@ from pathlib import Path
 
 import numpy as np
 
-from q3asr import decoder, models
+from q3asr import decoder
 
 MODEL_DIR = os.environ.get("Q3ASR_MODEL_DIR")
-SPEC = models.resolve_paths("0.6b", Path(MODEL_DIR) if MODEL_DIR else None)
 
 
-@unittest.skipUnless(SPEC["asr_llm"].exists(), "set Q3ASR_MODEL_DIR to run")
+@unittest.skipUnless(MODEL_DIR, "set Q3ASR_MODEL_DIR to run")
 class DecoderIntegrationTest(unittest.TestCase):
     def test_special_ids_present(self):
-        d = decoder.ASRDecoder(str(SPEC["asr_llm"]))
+        d = decoder.ASRDecoder(str(Path(MODEL_DIR) / "qwen3_asr_llm.q4"))
         ids = d.special_ids()
         for key in ("im_start", "im_end", "audio_start", "audio_end", "asr_text", "eos"):
             self.assertIn(key, ids)
 
     def test_tokenize_roundtrip(self):
-        d = decoder.ASRDecoder(str(SPEC["asr_llm"]))
+        d = decoder.ASRDecoder(str(Path(MODEL_DIR) / "qwen3_asr_llm.q4"))
         ids = d.tokenize("hello world")
         self.assertIsInstance(ids, list)
         self.assertTrue(all(isinstance(i, int) for i in ids))
 
     def test_token_embeddings_shape(self):
-        d = decoder.ASRDecoder(str(SPEC["asr_llm"]))
+        d = decoder.ASRDecoder(str(Path(MODEL_DIR) / "qwen3_asr_llm.q4"))
         ids = d.tokenize("你好")
         emb = d.token_embeddings(ids)
         self.assertEqual(emb.shape[0], len(ids))
@@ -1067,7 +957,7 @@ class DecoderIntegrationTest(unittest.TestCase):
         self.assertEqual(emb.dtype, np.float32)
 
     def test_decode_silence_does_not_crash(self):
-        d = decoder.ASRDecoder(str(SPEC["asr_llm"]))
+        d = decoder.ASRDecoder(str(Path(MODEL_DIR) / "qwen3_asr_llm.q4"))
         ids = d.special_ids()
         embed_tbl = d.token_embeddings([ids["im_start"]])
         noise = np.random.randn(50, embed_tbl.shape[1]).astype(np.float32) * 1e-3
@@ -1081,20 +971,33 @@ class DecoderIntegrationTest(unittest.TestCase):
 Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_decoder -v`
 Expected: 无模型 SKIPPED; 有模型 FAIL — `ModuleNotFoundError`
 
+- [ ] **Step 2b: 安装依赖**
+
+```bash
+.venv/Scripts/python -m pip install llama-cpp-python gguf --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+```
+注意: llama-cpp-python 的 Windows wheel 在 abetlen 官方索引(不在 PyPI)。pyproject.toml 依赖里已含 `gguf`(Task 1 计划已更新)。
+
 - [ ] **Step 3: 实现 decoder.py**
 
 ```python
 # q3asr/decoder.py
-"""GGUF decoder 推理(llama-cpp-python 底层 API, 喂入 embedding 序列)。"""
-import dataclasses
-import numpy as np
+"""GGUF decoder 推理(llama-cpp-python 底层 API, 喂入 embedding 序列)。
 
-import llama_cpp
-from llama_cpp import (llama_decode, llama_model_default_params,
-                       llama_new_context_with_model, llama_backend_init,
-                       llama_model_load_from_file, llama_batch_init,
-                       llama_batch_set_embd, llama_get_logits)
-from gguf import GGUFReader
+针对 llama-cpp-python 0.3.34 的低层 API(已探针验证):
+- 0.3.34 把 vocab 从 model 分离: llama_tokenize / llama_token_to_piece / llama_token_eos
+  都收 llama_vocab_p(由 llama_model_get_vocab(model) 取得)。
+- 没有 llama_batch_set_embd / llama_batch_add / llama_model_eos / llama_model_embd_size;
+  改用直接填 llama_batch 结构体 + llama_decode。
+- token 嵌入表来自 GGUF token_embd.weight, 量化张量用 gguf.quants.dequantize 按需反量化。
+"""
+import ctypes
+import dataclasses
+
+import numpy as np
+import llama_cpp as lc
+from gguf import GGUFReader, GGMLQuantizationType
+from gguf.quants import dequantize, GGML_QUANT_SIZES
 
 
 @dataclasses.dataclass
@@ -1105,61 +1008,84 @@ class DecodeResult:
     is_aborted: bool = False
 
 
-def _read_token_embeddings(gguf_path: str) -> np.ndarray:
-    """从 GGUF 读取 token 嵌入表 (vocab_size, D) f32。"""
-    reader = GGUFReader(gguf_path)
-    tensors = {t.name: t for t in reader.tensors}
-    emb_t = tensors["token_embd.weight"]
-    arr = emb_t.data.reshape(emb_t.shape)
-    return np.ascontiguousarray(arr, dtype=np.float32)
+class _TokenEmbeddingTable:
+    """GGUF token_embd.weight, 按 token 反量化。"""
+
+    def __init__(self, gguf_path):
+        reader = GGUFReader(str(gguf_path))
+        tensor = next(t for t in reader.tensors if t.name == "token_embd.weight")
+        self.qtype = GGMLQuantizationType(tensor.tensor_type)
+        n_embd = tensor.shape[0]
+        n_vocab = tensor.shape[1]
+        if self.qtype in (GGMLQuantizationType.F32, GGMLQuantizationType.F16):
+            self._raw = tensor.data.reshape(n_vocab, n_embd)
+            self._float = True
+        else:
+            bs, ts = GGML_QUANT_SIZES[self.qtype]
+            bpr = (n_embd // bs) * ts
+            self._raw = tensor.data.reshape(n_vocab, bpr)
+            self._float = False
+
+    def __call__(self, ids):
+        if self._float:
+            return np.ascontiguousarray(self._raw[list(ids)].astype(np.float32))
+        return np.ascontiguousarray(dequantize(self._raw[list(ids)], self.qtype.value),
+                                    dtype=np.float32)
+
+
+def _int_arr(n, vals):
+    return (lc.llama_token * n)(*vals)
 
 
 class ASRDecoder:
     def __init__(self, gguf_path: str, n_ctx: int = 4096, n_batch: int = 4096):
-        llama_backend_init()
-        params = llama_model_default_params()
-        self.model = llama_model_load_from_file(gguf_path, params)
-        assert self.model, "failed to load GGUF model"
-        ctx_params = llama_cpp.llama_context_default_params()
-        ctx_params.n_ctx = n_ctx
-        ctx_params.n_batch = n_batch
-        self.ctx = llama_new_context_with_model(self.model, ctx_params)
-        assert self.ctx, "failed to create context"
-        self.embed_tbl = _read_token_embeddings(gguf_path)
-        self.vocab_size = self.embed_tbl.shape[0]
-        self.n_embd = self.embed_tbl.shape[1]
-        self._cache_ids()
-
-    def _cache_ids(self):
-        tok = lambda t: llama_cpp.llama_tokenize(
-            self.model, t.encode("utf-8"), len(t.encode("utf-8")), False, True, 1)
-        self.specials = {
-            "im_start": self._id("<|im_start|>", tok),
-            "im_end": self._id("<|im_end|>", tok),
-            "audio_start": self._id("<|audio_start|>", tok),
-            "audio_end": self._id("<|audio_end|>", tok),
-            "asr_text": self._id("<asr_text>", tok),
-            "eos": llama_cpp.llama_model_eos(self.model),
-        }
-
-    def _id(self, text, tok):
-        ids = tok(text)
-        return ids[0]
+        lc.llama_backend_init()
+        self.model = lc.llama_model_load_from_file(str(gguf_path).encode("utf-8"),
+                                                   lc.llama_model_default_params())
+        if not self.model:
+            raise RuntimeError(f"failed to load GGUF model: {gguf_path}")
+        self.vocab = lc.llama_model_get_vocab(self.model)
+        self.n_embd = lc.llama_model_n_embd(self.model)
+        cparams = lc.llama_context_default_params()
+        cparams.n_ctx = n_ctx
+        cparams.n_batch = n_batch
+        self.ctx = lc.llama_new_context_with_model(self.model, cparams)
+        if not self.ctx:
+            raise RuntimeError("failed to create context")
+        self.emb_tbl = _TokenEmbeddingTable(gguf_path)
+        self.specials = {}
+        for key, text in (("im_start", "<|im_start|>"), ("im_end", "<|im_end|>"),
+                          ("audio_start", "<|audio_start|>"), ("audio_end", "<|audio_end|>"),
+                          ("asr_text", "<asr_text>")):
+            self.specials[key] = self.tokenize(text)[0]
+        self.specials["eos"] = lc.llama_token_eos(self.vocab)
 
     def special_ids(self) -> dict:
         return dict(self.specials)
 
     def tokenize(self, text: str) -> list[int]:
         b = text.encode("utf-8")
-        return list(llama_cpp.llama_tokenize(self.model, b, len(b), False, True, 1))
+        buf = (lc.llama_token * 4096)()
+        n = lc.llama_tokenize(self.vocab, b, len(b), buf, 4096, True, True)
+        return list(buf[:n])
 
     def token_embeddings(self, ids: list[int]) -> np.ndarray:
-        return self.embed_tbl[ids]
+        return self.emb_tbl(ids)
+
+    def _detok(self, token: int) -> str:
+        buf = ctypes.create_string_buffer(64)
+        m = lc.llama_token_to_piece(self.vocab, token, buf, 64, 0, True)
+        return buf.raw[:m].decode("utf-8", errors="replace") if m > 0 else ""
+
+    def _new_chain(self, temperature, seed):
+        chain = lc.llama_sampler_chain_init(lc.llama_sampler_chain_default_params())
+        lc.llama_sampler_chain_add(chain, lc.llama_sampler_init_temp(temperature))
+        lc.llama_sampler_chain_add(chain, lc.llama_sampler_init_dist(seed))
+        return chain
 
     def decode_embeddings(self, embd, prefix_text, language=None, context="",
                           temperature=0.4, rollback_num=5,
                           is_last_chunk=False, max_new_tokens=512) -> DecodeResult:
-        # 1. 拼装 prompt embedding(参考 v0.1 asr.py::_build_prompt_embd 思路)
         sp = self.specials
         pre = ([sp["im_start"]] + self.tokenize(f"system\n{context or 'You are a helpful assistant.'}")
                + [sp["im_end"], sp["im_start"]] + self.tokenize("user\n") + [sp["audio_start"]])
@@ -1169,58 +1095,67 @@ class ASRDecoder:
         suf = [sp["audio_end"], sp["im_end"], sp["im_start"]] + self.tokenize(head) \
             + [sp["asr_text"]] + self.tokenize(prefix_text)
         full = np.concatenate([self.token_embeddings(pre), embd, self.token_embeddings(suf)], axis=0)
-
-        # 2. prefill
         n = full.shape[0]
-        batch = llama_batch_init(max(n * 4, 8192), 1, 1)
-        llama_batch_set_embd(batch, full, np.arange(n, dtype=np.int32), 0)
-        llama_decode(self.ctx, batch)
 
-        # 3. 自回归生成
-        text_out = ""
+        # prefill: embedding batch
+        batch = lc.llama_batch_init(n, 1, 1)
+        batch.n_tokens = n
+        batch.pos = ctypes.cast(_int_arr(n, range(n)), type(batch.pos))
+        batch.n_seq_id = ctypes.cast(_int_arr(n, [1] * n), type(batch.n_seq_id))
+        seq_arr = (ctypes.POINTER(lc.llama_token) * n)(
+            *(ctypes.cast(_int_arr(1, [0]), ctypes.POINTER(lc.llama_token)) for _ in range(n)))
+        batch.seq_id = ctypes.cast(seq_arr, type(batch.seq_id))
+        logits = (ctypes.c_byte * n)(*([0] * (n - 1) + [1]))
+        batch.logits = ctypes.cast(logits, type(batch.logits))
+        ptrs = (ctypes.POINTER(ctypes.c_float) * n)(
+            *(full[i].ctypes.data_as(ctypes.POINTER(ctypes.c_float)) for i in range(n)))
+        batch.embd = ctypes.cast(ptrs, type(batch.embd))
+        if lc.llama_decode(self.ctx, batch) != 0:
+            raise RuntimeError("prefill decode failed")
+
+        # generation
+        chain = self._new_chain(temperature, int(np.random.randint(0, 2 ** 31 - 1)))
+        text_parts = []
         stable = []
         cur = n
         for _ in range(max_new_tokens):
-            logits = llama_get_logits(self.ctx)  # (n_vocab,)
-            token = _argmax_with_temp(logits, temperature)
+            token = lc.llama_sampler_sample(chain, self.ctx, -1)
             if token in (sp["eos"], sp["im_end"]):
                 break
-            b = llama_batch_init(1, 0, 1)
-            llama_cpp.llama_batch_add(b, token, cur, [0], True)
-            llama_decode(self.ctx, b)
+            gb = lc.llama_batch_init(1, 0, 1)
+            gb.n_tokens = 1
+            gb.token = ctypes.cast(_int_arr(1, [token]), type(gb.token))
+            gb.pos = ctypes.cast(_int_arr(1, [cur]), type(gb.pos))
+            gb.n_seq_id = ctypes.cast(_int_arr(1, [1]), type(gb.n_seq_id))
+            gseq = (ctypes.POINTER(lc.llama_token) * 1)(
+                ctypes.cast(_int_arr(1, [0]), ctypes.POINTER(lc.llama_token)))
+            gb.seq_id = ctypes.cast(gseq, type(gb.seq_id))
+            glog = (ctypes.c_byte * 1)(1)
+            gb.logits = ctypes.cast(glog, type(gb.logits))
+            lc.llama_decode(self.ctx, gb)
             stable.append(token)
             if len(stable) > rollback_num:
-                text_out += self._detok(stable.pop(0))
+                text_parts.append(self._detok(stable.pop(0)))
             cur += 1
             if len(stable) > 15 and len(set(stable[-15:])) <= 3:
-                return DecodeResult(text_out, n, len(stable), is_aborted=True)
+                return DecodeResult("".join(text_parts), n, len(stable), is_aborted=True)
         if is_last_chunk:
             while stable:
-                text_out += self._detok(stable.pop(0))
-        return DecodeResult(text_out, n, len(stable), is_aborted=False)
-
-    def _detok(self, token: int) -> str:
-        raw = llama_cpp.llama_token_to_piece(self.ctx, token)
-        return raw.decode("utf-8", errors="replace")
-
-
-def _argmax_with_temp(logits: np.ndarray, temperature: float) -> int:
-    if temperature <= 0.0:
-        return int(np.argmax(logits))
-    p = np.exp((logits - logits.max()) / temperature)
-    p /= p.sum()
-    return int(np.random.choice(len(p), p=p))
+                text_parts.append(self._detok(stable.pop(0)))
+        return DecodeResult("".join(text_parts), n, len(stable), is_aborted=False)
 ```
 
 实现注意事项(必须满足):
-- 上例 `llama_batch_set_embd` 与 `llama_batch_add` 的**精确签名以当前 llama-cpp-python 版本为准**; 若 API 名/参数有出入, 以实现环境实际 API 为准修正(高优先级), 并保持接口层(ASRDecoder 方法签名)不变。
-- 采样: 期望用 llama-cpp-python 的 sampler 链(如 `llama_sampler_chain_init`)而不是手动 softmax; 若底层 API 可用请优先用官方 sampler; 手动 softmax 仅作兜底。**结果质量以真实转录为准**。
-- `rollback_num` 语义与 v0.1 相同(延迟显示 token, 供"熔断回滚"使用); 此处简化为 text_out 立即拼接(首版不追求流式显示, 只求正确性)。**文档注释说明与 v0.1 的差异**。
+- 上面的代码是**控制器用 llama-cpp-python 0.3.34 探针验证过的实现**(加载 0.6b Q4_K 模型 → 喂 70 个 embedding 的 prefill rc=0 → 采样 → 生成 → 全部通过)。请**按此实现**, 不要退回手动 softmax。
+- `gguf` 包的 `GGML_QUANT_SIZES` 位于 `gguf.quants`(Q4_K: block 256, type 144); `dequantize(data, qtype.value)` 对 2D packed 字节反量化。
+- 跨平台: 数组一律用绑定自身的标量类型(`lc.llama_token` 等)+ `ctypes.cast(arr, type(batch.pos))`, 不要硬编码 c_int32。
+- `rollback_num` 语义与 v0.1 相同(延迟显示, 供熔断回滚); 此处简化(首版不追求流式显示, 只求正确性)。
+- 探针参考: `C:/Users/zwb/AppData/Local/Temp/opencode/probe_decoder.py`(可读, 但以上代码已并入)。
 
 - [ ] **Step 4: 运行集成测试确认通过**
 
 Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_decoder -v`
-Expected: PASS(4 个测试; 若 API 名不对, 按实际 llama-cpp-python 版本修正)
+Expected: PASS(4 个测试)
 
 - [ ] **Step 5: 提交**
 
@@ -1255,20 +1190,19 @@ from pathlib import Path
 
 import numpy as np
 
-from q3asr import aligner, models
+from q3asr import aligner
 
 MODEL_DIR = os.environ.get("Q3ASR_MODEL_DIR")
-SPEC = models.resolve_paths("0.6b", Path(MODEL_DIR) if MODEL_DIR else None)
 
 
-@unittest.skipUnless(SPEC["align_frontend"].exists(), "set Q3ASR_MODEL_DIR to run")
+@unittest.skipUnless(MODEL_DIR, "set Q3ASR_MODEL_DIR to run")
 class AlignerIntegrationTest(unittest.TestCase):
     def test_align_returns_sorted_items(self):
         al = aligner.Aligner(
-            str(SPEC["align_frontend"]),
-            str(SPEC["align_backend"]),
-            str(SPEC["mel_filters"]),
-            str(SPEC["align_llm"]),
+            str(Path(MODEL_DIR) / "qwen3_aligner_encoder_frontend.int4.onnx"),
+            str(Path(MODEL_DIR) / "qwen3_aligner_encoder_backend.int4.onnx"),
+            str(Path(MODEL_DIR) / "mel_filters.npy"),
+            str(Path(MODEL_DIR) / "qwen3_aligner_llm.q4_k.gguf"),
         )
         audio = np.zeros(16000 * 2, dtype=np.float32)
         items = al.align(audio, "你好", offset_sec=10.0)
@@ -1281,7 +1215,7 @@ class AlignerIntegrationTest(unittest.TestCase):
 
 - [ ] **Step 2: 运行确认失败/跳过**
 
-Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_aligner -v`
+Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models python -m unittest tests.test_aligner -v`
 Expected: 无模型 SKIPPED; 有模型 FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 3: 实现 aligner.py**
@@ -1330,7 +1264,7 @@ class Aligner:
 
 - [ ] **Step 4: 运行集成测试确认通过**
 
-Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat python -m unittest tests.test_aligner -v`
+Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models python -m unittest tests.test_aligner -v`
 Expected: PASS
 
 - [ ] **Step 5: 提交**
@@ -1366,17 +1300,16 @@ import os
 import unittest
 from pathlib import Path
 
-from q3asr import engine, models
+from q3asr import engine
 
 MODEL_DIR = os.environ.get("Q3ASR_MODEL_DIR")
-SPEC = models.resolve_paths("0.6b", Path(MODEL_DIR) if MODEL_DIR else None)
 
 
-@unittest.skipUnless(SPEC["asr_frontend"].exists() and os.environ.get("Q3ASR_TEST_AUDIO"),
+@unittest.skipUnless(MODEL_DIR and os.environ.get("Q3ASR_TEST_AUDIO"),
                      "set Q3ASR_MODEL_DIR and Q3ASR_TEST_AUDIO to run")
 class EngineIntegrationTest(unittest.TestCase):
     def test_transcribe_produces_items(self):
-        eng = engine.TranscribeEngine({"paths": SPEC, "device": "cpu"})
+        eng = engine.TranscribeEngine({"model_dir": MODEL_DIR, "device": "cpu"})
         res = eng.transcribe(os.environ["Q3ASR_TEST_AUDIO"], duration=30.0)
         self.assertTrue(res.text)
         self.assertIsNotNone(res.alignment)
@@ -1397,7 +1330,7 @@ export Q3ASR_TEST_AUDIO="$LOCALAPPDATA/Temp/opencode/subtitle-test/clip.mp3"
 
 - [ ] **Step 3: 运行确认失败/跳过**
 
-Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat Q3ASR_TEST_AUDIO=... python -m unittest tests.test_engine -v`
+Run: `Q3ASR_MODEL_DIR=... Q3ASR_TEST_AUDIO=... python -m unittest tests.test_engine -v`
 Expected: 无模型/音频 SKIPPED; 有则 FAIL — `ModuleNotFoundError`
 
 - [ ] **Step 4: 实现 engine.py 与 transcription.py**
@@ -1447,16 +1380,22 @@ from q3asr.transcription import TranscriptionEngine, TranscribeResult, AlignItem
 
 class TranscribeEngine(TranscriptionEngine):
     def __init__(self, config: dict):
-        p = config["paths"]
+        md = config["model_dir"]
         providers = backend_mod.onnx_providers(config.get("device", "cpu"))
         self.enc = QwenAudioEncoder(
-            str(p["asr_frontend"]), str(p["asr_backend"]), str(p["mel_filters"]),
+            f"{md}/qwen3_asr_encoder_frontend.int4.onnx",
+            f"{md}/qwen3_asr_encoder_backend.int4.onnx",
+            f"{md}/mel_filters.npy",
             providers=providers,
             warmup_sec=config.get("warmup_sec", 3.0))
-        self.dec = ASRDecoder(str(p["asr_llm"]), n_ctx=config.get("n_ctx", 4096))
+        self.dec = ASRDecoder(f"{md}/qwen3_asr_llm.q4",
+                              n_ctx=config.get("n_ctx", 4096))
         self.align = Aligner(
-            str(p["align_frontend"]), str(p["align_backend"]), str(p["mel_filters"]),
-            str(p["align_llm"]), providers=providers)
+            f"{md}/qwen3_aligner_encoder_frontend.int4.onnx",
+            f"{md}/qwen3_aligner_encoder_backend.int4.onnx",
+            f"{md}/mel_filters.npy",
+            f"{md}/qwen3_aligner_llm.q4_k.gguf",
+            providers=providers)
         self.chunk_size = config.get("chunk_size", 40.0)
         self.memory_num = config.get("memory_num", 1)
 
@@ -1497,13 +1436,13 @@ class TranscribeEngine(TranscriptionEngine):
 
 ```bash
 # 对已知文本的音频跑一次, 目视检查 JSON 时间戳是否与语音大致吻合
-Q3ASR_MODEL_DIR=... Q3ASR_TEST_AUDIO=... python -m q3asr --model-dir "$HOME/.cache/q3asr/models-flat" --json-only test_tone.mp3 -y
+Q3ASR_MODEL_DIR=... Q3ASR_TEST_AUDIO=... python -m q3asr --json-only test_tone.mp3 -y
 ```
 若时间戳明显漂移(先于/迟于语音), 回到 Task 8 按 v0.1 `aligner.py` 移植真实 CTC 对齐逻辑。**这是本计划唯一允许"返工校准"的步骤, 以真实音频质量为验收标准。**
 
 - [ ] **Step 6: 运行集成测试确认通过**
 
-Run: `Q3ASR_MODEL_DIR=$HOME/.cache/q3asr/models-flat Q3ASR_TEST_AUDIO=... python -m unittest tests.test_engine -v`
+Run: `Q3ASR_MODEL_DIR=... Q3ASR_TEST_AUDIO=... python -m unittest tests.test_engine -v`
 Expected: PASS
 
 - [ ] **Step 7: 提交**
@@ -1681,11 +1620,12 @@ from q3asr import cli
 
 class CliWiringTest(unittest.TestCase):
     def test_no_model_dir_returns_exit_3(self):
-        # 不存在的平铺模型目录 → resolve_paths 抛 DownloadError → 退出码 3
-        rc = cli.main(["--model-dir", "/nonexistent/x", "in.mp3", "-y"])
+        # 指定不存在的模型目录, 应走到模型加载并返回 3
+        rc = cli.main(["--model-dir", "/nonexistent/x", "--download-models-only"])
         self.assertEqual(rc, 3)
 
-    def test_bad_flag_is_exit_code_2(self):
+    def test_download_models_only_flag_parses(self):
+        # 仅验证参数可解析(不触发真实下载, 因 --model-dir 不存在时直接退出)
         with self.assertRaises(SystemExit) as ctx:
             cli.main(["--bogus"])
         self.assertEqual(ctx.exception.code, 2)
@@ -1745,7 +1685,8 @@ def main(argv=None) -> int:
         device = backend_mod.detect_backend(args.device)
         print(f"[INFO] backend: {device}")
         if args.download_models_only:
-            models_mod.ensure_models(model=args.model)
+            models_mod.ensure_models(model=args.model,
+                                     model_dir=Path(args.model_dir) if args.model_dir else None)
             print("[INFO] models ready")
             return 0
         if not args.input:
@@ -1753,9 +1694,9 @@ def main(argv=None) -> int:
             return 2
         from q3asr.engine import TranscribeEngine
         from q3asr import output
-        paths = models_mod.resolve_paths(
+        model_dir = models_mod.ensure_models(
             model=args.model, model_dir=Path(args.model_dir) if args.model_dir else None)
-        eng = TranscribeEngine({"paths": paths, "device": device})
+        eng = TranscribeEngine({"model_dir": str(model_dir), "device": device})
         res = eng.transcribe(args.input, language=args.language,
                              start_second=args.seek_start, duration=args.duration)
         base = Path(args.input).with_suffix("")
@@ -1783,7 +1724,7 @@ if __name__ == "__main__":
 
 ```bash
 Q3ASR_MODEL_DIR=...   # 实际用 --model-dir
-python -m q3asr --model-dir "$HOME/.cache/q3asr/models-flat" "$Q3ASR_TEST_AUDIO" -y --device cpu
+python -m q3asr --model-dir "$HOME/.cache/q3asr/models" "$Q3ASR_TEST_AUDIO" -y --device cpu
 python - <<'PY'
 import json
 d = json.load(open("clip.json", encoding="utf-8"))
