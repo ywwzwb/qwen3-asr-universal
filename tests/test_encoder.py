@@ -7,10 +7,10 @@ import numpy as np
 from q3asr import encoder, models
 
 MODEL_DIR = os.environ.get("Q3ASR_MODEL_DIR")
-SPEC = models.resolve_paths("0.6b", Path(MODEL_DIR) if MODEL_DIR else None)
+SPEC = models.resolve_paths("0.6b", Path(MODEL_DIR)) if MODEL_DIR else None
 
 
-@unittest.skipUnless(SPEC["asr_frontend"].exists(), "set Q3ASR_MODEL_DIR to run")
+@unittest.skipUnless(SPEC and SPEC["asr_frontend"].exists(), "set Q3ASR_MODEL_DIR to run")
 class EncoderIntegrationTest(unittest.TestCase):
     def test_encode_5s_silence(self):
         enc = encoder.QwenAudioEncoder(
