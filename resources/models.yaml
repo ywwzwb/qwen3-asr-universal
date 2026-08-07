@@ -1,0 +1,31 @@
+# resources/models.yaml
+# mirror 切换: gh=GitHub release(默认), ms=Modelscope(待上传, 占位映射)
+base_urls:
+  gh: "https://github.com/HaujetZhao/Qwen3-ASR-GGUF/releases/download/models"
+  ms: "https://modelscope.cn/models/HaujetZhao/Qwen3-ASR-GGUF/resolve/master"
+
+models:
+  - name: "1.7b"
+    zip: "Qwen3-ASR-1.7B-gguf.zip"
+    zip_sha256: "080746b8235d55a2f6bfaf1a8bf21f2107c4a29045a48d95c79e454cd42f5bf0"
+    size_mb: 1411
+    files:
+      - {name: "qwen3_asr_encoder_frontend.int4.onnx", in_zip: "qwen3_asr_encoder_frontend.int4.onnx", sha256: "9cda7769acc0f1c3077600156b59759abfdeda46c2bbab3610b6ce47cee70e90"}
+      - {name: "qwen3_asr_encoder_backend.int4.onnx", in_zip: "qwen3_asr_encoder_backend.int4.onnx", sha256: "1b97a39201050521f63374131557b033b758f8ae7d2a3d6efaa0f9d8900bab9a"}
+      - {name: "qwen3_asr_llm.q4_k.gguf", in_zip: "qwen3_asr_llm.q4_k.gguf", sha256: "8eb99f67d9bcd882e825344e05b0e60ae77bc0b2830f972a7b4b013e91ea14a6"}
+  - name: "0.6b"
+    zip: "Qwen3-ASR-0.6B-gguf.zip"
+    zip_sha256: "3684b9cac9978a93c82ceeb93448bb5027c0b2beaf2e0affa35190ba20e545ff"
+    size_mb: 564
+    files:
+      - {name: "qwen3_asr_encoder_frontend.int4.onnx", in_zip: "qwen3_asr_encoder_frontend.int4.onnx", sha256: "8c29d210b934f377983c0daa28d276f36cbc9a8a823d59d3afc5da2fd8eda2f6"}
+      - {name: "qwen3_asr_encoder_backend.int4.onnx", in_zip: "qwen3_asr_encoder_backend.int4.onnx", sha256: "95b8ed080ef99e28de62523ea0d70fb5b1383f17d4238464a265b3454eaaaa55"}
+      - {name: "qwen3_asr_llm.q4_k.gguf", in_zip: "qwen3_asr_llm.q4_k.gguf", sha256: "38a5492b88292dcb14c48fb939212da8223ec8d1e19b29d6e2751f26c0754cdd"}
+  - name: "aligner"
+    zip: "Qwen3-ForceAligner-0.6B-gguf.zip"
+    zip_sha256: "d9c16a2db3293c0c4120b0291d5d0fcfa208d842577092ca49cecc08a4690fb7"
+    size_mb: 505
+    files:
+      - {name: "qwen3_aligner_encoder_frontend.int4.onnx", in_zip: "qwen3_aligner_encoder_frontend.int4.onnx", sha256: "858ea960c7feaf48a8787cb4a375e70216f99899cc229b174a6ebfdebd4f6e59"}
+      - {name: "qwen3_aligner_encoder_backend.int4.onnx", in_zip: "qwen3_aligner_encoder_backend.int4.onnx", sha256: "7c8931be70a64cd75be1671d714e9497d0bc2ef7943ffc9024807f71d24855b1"}
+      - {name: "qwen3_aligner_llm.q4_k.gguf", in_zip: "qwen3_aligner_llm.q4_k.gguf", sha256: "c2608b44866ac790fb0f9f542ae4a473c49fde03a7a2eb5b5370cc095b78dc8b"}
