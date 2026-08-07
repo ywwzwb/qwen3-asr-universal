@@ -26,3 +26,9 @@ class CliParseTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             cli.main([])
         self.assertEqual(ctx.exception.code, 2)
+
+    def test_device_and_prec_accepted(self):
+        # --model-dir 不存在 → resolve_paths 抛 DownloadError → 退出码 3, 不触发网络下载
+        rc = cli.main(["--device", "cpu", "--prec", "int4",
+                       "--model-dir", "/nonexistent/x", "in.mp3", "-y"])
+        self.assertEqual(rc, 3)

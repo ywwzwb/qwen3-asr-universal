@@ -25,6 +25,17 @@ class ExportJsonTest(unittest.TestCase):
             output.export_json(str(p), [])
             self.assertEqual(json.loads(p.read_text(encoding="utf-8")), [])
 
+    def test_filters_zero_duration_items(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "out.json"
+            items = [AlignItem("word", 0.1, 0.5),
+                     AlignItem(" ", 0.5, 0.5),
+                     AlignItem("The", 0.7, 0.7)]
+            output.export_json(str(p), items)
+            data = json.loads(p.read_text(encoding="utf-8"))
+            self.assertEqual([x["text"] for x in data], ["word"])
+            self.assertTrue(all(x["start"] < x["end"] for x in data))
+
 
 class ExportTxtTest(unittest.TestCase):
     def test_newlines_after_punctuation(self):
