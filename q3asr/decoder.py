@@ -176,14 +176,15 @@ class ASRDecoder:
                     text_parts.append(self._detok(stable.pop(0)))
                 cur += 1
                 if len(stable) > 15 and len(set(stable[-15:])) <= 3:
-                    return DecodeResult("".join(text_parts), n, len(stable), is_aborted=True)
+                    while stable:
+                        text_parts.append(self._detok(stable.pop(0)))
+                    return DecodeResult("".join(text_parts), n, 0, is_aborted=True)
         finally:
             lc.llama_batch_free(gb)
             lc.llama_sampler_free(chain)
-        if is_last_chunk:
-            while stable:
-                text_parts.append(self._detok(stable.pop(0)))
-        return DecodeResult("".join(text_parts), n, len(stable), is_aborted=False)
+        while stable:
+            text_parts.append(self._detok(stable.pop(0)))
+        return DecodeResult("".join(text_parts), n, 0, is_aborted=False)
 
     def prefill_logits(self, full_embd: np.ndarray, positions: list[int]) -> np.ndarray:
         """单次前向, 返回序列索引 positions 处 token 的 logits 行 (K, n_vocab)。"""

@@ -100,8 +100,19 @@ def _ensure_entry(m: dict, f: dict, dl_dir: Path, mirror: str) -> Path:
     return out
 
 
+def _lookup_model(model: str) -> dict:
+    try:
+        return next(x for x in MODEL_MANIFEST if x["name"] == model)
+    except StopIteration:
+        raise DownloadError(f"unknown model: {model}") from None
+
+
 def ensure_models(model: str = "1.7b", mirror: str = "gh") -> dict[str, Path]:
     """下载+校验+解压到默认缓存布局, 返回路径表。"""
+    asr_m = _lookup_model(model)
+    align_m = _lookup_model("aligner")
+    if mirror not in asr_m["base_urls"]:
+        raise DownloadError(f"unknown mirror: {mirror}")
     root = default_model_dir()
     root.mkdir(parents=True, exist_ok=True)
     dl_dir = root / "_downloads"
@@ -111,8 +122,6 @@ def ensure_models(model: str = "1.7b", mirror: str = "gh") -> dict[str, Path]:
     if not mel.exists():
         shutil.copyfile(_RESOURCES / "mel_filters.npy", mel)
 
-    asr_m = next(x for x in MODEL_MANIFEST if x["name"] == model)
-    align_m = next(x for x in MODEL_MANIFEST if x["name"] == "aligner")
     asr_dir = root / model
     align_dir = root / "aligner"
     for sub, m, names in ((asr_dir, asr_m, _ASR_FILES), (align_dir, align_m, _ALIGN_FILES)):

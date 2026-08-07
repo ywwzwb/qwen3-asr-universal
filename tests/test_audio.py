@@ -44,3 +44,10 @@ class DecodeAudioTest(unittest.TestCase):
             _write_sine(p, 2.0)
             x = audio.decode_audio(str(p), start_second=1.0)
             self.assertEqual(len(x), 16000)
+
+    def test_seek_past_end_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "tone.wav"
+            _write_sine(p, 1.0)
+            with self.assertRaises(ValueError):
+                audio.decode_audio(str(p), start_second=99999.0)

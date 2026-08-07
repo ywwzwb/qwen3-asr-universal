@@ -39,3 +39,23 @@ class DecoderIntegrationTest(unittest.TestCase):
         embd = np.concatenate([embed_tbl, noise, embed_tbl], axis=0)
         res = d.decode_embeddings(embd, "", temperature=0.0, max_new_tokens=16)
         self.assertIsInstance(res.text, str)
+
+    def test_non_last_chunk_flushes_tail_tokens(self):
+        if not os.environ.get("Q3ASR_TEST_AUDIO"):
+            self.skipTest("set Q3ASR_TEST_AUDIO to run")
+        from q3asr import audio as audio_mod
+        from q3asr.encoder import QwenAudioEncoder
+        d = decoder.ASRDecoder(str(Path(MODEL_DIR) / "qwen3_asr_llm.q4_k.gguf"))
+        enc = QwenAudioEncoder(str(Path(MODEL_DIR) / "qwen3_asr_encoder_frontend.int4.onnx"),
+                               str(Path(MODEL_DIR) / "qwen3_asr_encoder_backend.int4.onnx"),
+                               str(Path(MODEL_DIR) / "mel_filters.npy"))
+        x = audio_mod.decode_audio(os.environ["Q3ASR_TEST_AUDIO"], duration=15.0)
+        seg = np.pad(x, (0, 16000 * 40 - len(x)))
+        embd, _ = enc.encode(seg)
+        final = d.decode_embeddings(embd, "", temperature=0.0, max_new_tokens=64,
+                                    is_last_chunk=True)
+        mid = d.decode_embeddings(embd, "", temperature=0.0, max_new_tokens=64,
+                                  is_last_chunk=False)
+        self.assertTrue(final.text, "expected model to generate text")
+        self.assertEqual(mid.text, final.text,
+                         "non-last chunk must not drop tail tokens")

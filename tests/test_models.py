@@ -1,7 +1,10 @@
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
 from q3asr import models
 
 
@@ -61,3 +64,17 @@ class ManifestTest(unittest.TestCase):
             for key in ("asr_frontend", "asr_backend", "asr_llm",
                         "align_frontend", "align_backend", "align_llm"):
                 self.assertTrue(spec[key].exists(), f"{key} -> {spec[key]}")
+
+
+class ModelLookupErrorTest(unittest.TestCase):
+    def test_unknown_model_raises_download_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"Q3ASR_CACHE_DIR": d}):
+                with self.assertRaises(models.DownloadError):
+                    models.ensure_models(model="bogus")
+
+    def test_bad_mirror_raises_download_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"Q3ASR_CACHE_DIR": d}):
+                with self.assertRaises(models.DownloadError):
+                    models.ensure_models(mirror="bogus")

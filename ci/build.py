@@ -42,8 +42,10 @@ def main(target: str):
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name", "q3asr",
            "--collect-all", "imageio_ffmpeg",
            "--collect-all", "llama_cpp",
-           f"--add-data=resources{data_sep}resources",
-           "q3asr/__main__.py"]
+           f"--add-data=resources{data_sep}resources"]
+    for mod in HIDDEN:
+        cmd += ["--hidden-import", mod]
+    cmd.append("q3asr/__main__.py")
     subprocess.run(cmd, check=True)
     exe = Path("dist/q3asr.exe" if sys.platform.startswith("win") else "dist/q3asr")
     assert exe.exists()

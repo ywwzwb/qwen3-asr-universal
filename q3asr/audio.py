@@ -18,4 +18,7 @@ def decode_audio(path: str, sample_rate: int = 16000,
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg decode failed: {proc.stderr.decode(errors='replace')}")
-    return np.frombuffer(proc.stdout, dtype=np.float32).copy()
+    arr = np.frombuffer(proc.stdout, dtype=np.float32).copy()
+    if arr.size == 0:
+        raise ValueError(f"no audio decoded from {path} (seek may be past end)")
+    return arr
