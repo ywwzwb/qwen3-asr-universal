@@ -27,6 +27,21 @@ HIDDEN = [
 ]
 
 
+LLAMA_INDEX = {"cpu": "cpu", "vulkan": "vulkan", "cuda": "cu124", "metal": "metal"}
+
+
+def _pip_install(cmd, retries=3):
+    """pip install with retries (transient CDN/CRC corruptions happen)."""
+    for i in range(retries):
+        try:
+            subprocess.run(cmd, check=True)
+            return
+        except subprocess.CalledProcessError:
+            if i == retries - 1:
+                raise
+            print(f"[build] pip install failed; retrying {i + 1}/{retries}", file=sys.stderr)
+
+
 def main(target: str):
     if target not in TARGETS:
         sys.exit(f"unknown target {target}; choose from {sorted(TARGETS)}")
@@ -35,15 +50,15 @@ def main(target: str):
     # App runtime deps + pyinstaller from PyPI (no llama-cpp-python here: pip may
     # have installed a source-built CPU wheel already, and a later same-version
     # install is treated as satisfied — silently keeping the wrong backend).
-    subprocess.run([sys.executable, "-m", "pip", "install",
-                    "pyinstaller", t["onnx"],
-                    "numpy", "scipy", "gguf", "pyyaml", "imageio-ffmpeg"], check=True)
+    _pip_install([sys.executable, "-m", "pip", "install",
+                  "pyinstaller", t["onnx"],
+                  "numpy", "scipy", "gguf", "pyyaml", "imageio-ffmpeg"])
     # Force the correct llama-cpp-python backend wheel (exclusive index + force
     # reinstall + no-deps, so a pre-existing CPU/source build is replaced).
-    subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps",
-                    "llama-cpp-python",
-                    "--index-url", "https://abetlen.github.io/llama-cpp-python/whl/" + backend],
-                   check=True)
+    _pip_install([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps",
+                  "llama-cpp-python",
+                  "--index-url",
+                  "https://abetlen.github.io/llama-cpp-python/whl/" + LLAMA_INDEX[backend]])
 
     data_sep = ";" if sys.platform.startswith("win") else ":"
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name", "q3asr",
