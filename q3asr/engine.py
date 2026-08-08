@@ -51,7 +51,13 @@ class TranscribeEngine(TranscriptionEngine):
                 seg = np.pad(seg, (0, spc - len(seg)))
             embd, _ = self.enc.encode(seg)
             prefix = "".join(m for _, m in memory)
-            res = self.dec.decode_embeddings(embd, prefix, language=language,
+            # Feed the previous chunk's AUDIO embeddings into the prompt (with
+            # its text) exactly like v0.1: <audio_start> prev_audio+curr_audio
+            # <audio_end> ... <asr_text> prev_text. Feeding only the previous
+            # TEXT makes the model think the answer is already written and it
+            # emits EOS -> empty chunks.
+            combined = np.concatenate([m[0] for m in memory] + [embd], axis=0) if memory else embd
+            res = self.dec.decode_embeddings(combined, prefix, language=language,
                                              context=context, temperature=temperature,
                                              is_last_chunk=(i == chunks - 1))
             texts.append(res.text)
