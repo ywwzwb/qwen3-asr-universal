@@ -55,10 +55,17 @@ def main(target: str):
                   "numpy", "scipy", "gguf", "pyyaml", "imageio-ffmpeg"])
     # Force the correct llama-cpp-python backend wheel (exclusive index + force
     # reinstall + no-deps, so a pre-existing CPU/source build is replaced).
-    _pip_install([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps",
-                  "llama-cpp-python",
-                  "--index-url",
-                  "https://abetlen.github.io/llama-cpp-python/whl/" + LLAMA_INDEX[backend]])
+    if target.startswith("macos"):
+        # abetlen's macosx arm64 wheels are currently corrupt (BadCRC on
+        # libggml-base.dylib); build from the PyPI sdist instead — a macOS
+        # arm64 source build enables Metal by default.
+        _pip_install([sys.executable, "-m", "pip", "install", "--force-reinstall",
+                      "llama-cpp-python"])
+    else:
+        _pip_install([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps",
+                      "llama-cpp-python",
+                      "--index-url",
+                      "https://abetlen.github.io/llama-cpp-python/whl/" + LLAMA_INDEX[backend]])
 
     data_sep = ";" if sys.platform.startswith("win") else ":"
     cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name", "q3asr",
