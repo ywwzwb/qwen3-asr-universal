@@ -1,4 +1,6 @@
 import unittest
+from unittest import mock
+
 from q3asr import backend
 
 
@@ -25,3 +27,13 @@ class ProvidersTest(unittest.TestCase):
 
     def test_cpu_providers(self):
         self.assertEqual(backend.onnx_providers("cpu"), ["CPUExecutionProvider"])
+
+    def test_vulkan_uses_dml_when_available(self):
+        with mock.patch("onnxruntime.get_available_providers",
+                        return_value=["DmlExecutionProvider", "CPUExecutionProvider"]):
+            self.assertEqual(backend.onnx_providers("vulkan"),
+                             ["DmlExecutionProvider", "CPUExecutionProvider"])
+
+    def test_vulkan_falls_back_to_cpu_without_dml(self):
+        with mock.patch("onnxruntime.get_available_providers", return_value=["CPUExecutionProvider"]):
+            self.assertEqual(backend.onnx_providers("vulkan"), ["CPUExecutionProvider"])

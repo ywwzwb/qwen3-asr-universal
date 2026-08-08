@@ -159,10 +159,10 @@ class Aligner:
     STEP_MS = 80.0
 
     def __init__(self, frontend_path, backend_path, mel_filters_path,
-                 llm_gguf, providers=None, n_ctx=4096):
+                 llm_gguf, providers=None, n_ctx=4096, device="cpu"):
         self.enc = QwenAudioEncoder(frontend_path, backend_path, mel_filters_path,
                                     providers=providers, warmup_sec=0.0)
-        self.dec = ASRDecoder(llm_gguf, n_ctx=n_ctx)
+        self.dec = ASRDecoder(llm_gguf, n_ctx=n_ctx, device=device)
         self.proc = _AlignerProcessor()
         self._ts_id = None
 

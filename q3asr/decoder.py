@@ -51,10 +51,13 @@ class _TokenEmbeddingTable:
 
 
 class ASRDecoder:
-    def __init__(self, gguf_path: str, n_ctx: int = 4096, n_batch: int = 4096):
+    def __init__(self, gguf_path: str, n_ctx: int = 4096, n_batch: int = 4096,
+                 device: str = "cpu"):
         lc.llama_backend_init()
+        params = lc.llama_model_default_params()
+        params.n_gpu_layers = -1 if device != "cpu" else 0
         self.model = lc.llama_model_load_from_file(str(gguf_path).encode("utf-8"),
-                                                   lc.llama_model_default_params())
+                                                   params)
         if not self.model:
             raise RuntimeError(f"failed to load GGUF model: {gguf_path}")
         self.vocab = lc.llama_model_get_vocab(self.model)

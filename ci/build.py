@@ -32,9 +32,16 @@ def main(target: str):
         sys.exit(f"unknown target {target}; choose from {sorted(TARGETS)}")
     t = TARGETS[target]
     backend = t["llama"][1] or "cpu"
+    # App runtime deps + pyinstaller from PyPI (no llama-cpp-python here: pip may
+    # have installed a source-built CPU wheel already, and a later same-version
+    # install is treated as satisfied — silently keeping the wrong backend).
     subprocess.run([sys.executable, "-m", "pip", "install",
-                    "pyinstaller", t["onnx"]], check=True)
-    subprocess.run([sys.executable, "-m", "pip", "install", "llama-cpp-python",
+                    "pyinstaller", t["onnx"],
+                    "numpy", "scipy", "gguf", "pyyaml", "imageio-ffmpeg"], check=True)
+    # Force the correct llama-cpp-python backend wheel (exclusive index + force
+    # reinstall + no-deps, so a pre-existing CPU/source build is replaced).
+    subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps",
+                    "llama-cpp-python",
                     "--index-url", "https://abetlen.github.io/llama-cpp-python/whl/" + backend],
                    check=True)
 

@@ -24,10 +24,11 @@ class TranscribeEngine(TranscriptionEngine):
             str(p["asr_frontend"]), str(p["asr_backend"]), str(p["mel_filters"]),
             providers=providers,
             warmup_sec=config.get("warmup_sec", 3.0))
-        self.dec = ASRDecoder(str(p["asr_llm"]), n_ctx=config.get("n_ctx", 4096))
+        self.dec = ASRDecoder(str(p["asr_llm"]), n_ctx=config.get("n_ctx", 4096),
+                              device=config.get("device", "cpu"))
         self.align = Aligner(
             str(p["align_frontend"]), str(p["align_backend"]), str(p["mel_filters"]),
-            str(p["align_llm"]), providers=providers)
+            str(p["align_llm"]), providers=providers, device=config.get("device", "cpu"))
         self.chunk_size = config.get("chunk_size", 40.0)
         self.memory_num = config.get("memory_num", 1)
 

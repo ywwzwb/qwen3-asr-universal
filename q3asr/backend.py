@@ -45,6 +45,16 @@ def onnx_providers(backend: str) -> list[str]:
         return ["CUDAExecutionProvider", "CPUExecutionProvider"]
     if backend == "metal":
         return ["MPSExecutionProvider", "CPUExecutionProvider"]
+    if backend == "vulkan":
+        # The vulkan build bundles onnxruntime-directml on Windows; use it so the
+        # encoder also runs on the GPU. On other platforms fall back to CPU.
+        try:
+            import onnxruntime as ort
+            if "DmlExecutionProvider" in ort.get_available_providers():
+                return ["DmlExecutionProvider", "CPUExecutionProvider"]
+        except Exception:
+            pass
+        return ["CPUExecutionProvider"]
     return ["CPUExecutionProvider"]
 
 
