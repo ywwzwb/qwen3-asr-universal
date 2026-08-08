@@ -128,8 +128,10 @@ def ensure_models(model: str = "1.7b", mirror: str = "gh") -> dict[str, Path]:
         sub.mkdir(parents=True, exist_ok=True)
         for fn in names:
             f = next(x for x in m["files"] if x["name"] == fn)
-            src = _ensure_entry(m, f, dl_dir, mirror)
             out = sub / fn
+            if out.exists() and sha256_of(out) == f["sha256"]:
+                continue
+            src = _ensure_entry(m, f, dl_dir, mirror)
             if not out.exists():
                 os.replace(src, out)
     return build_spec(model)
