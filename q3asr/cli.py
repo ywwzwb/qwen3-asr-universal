@@ -16,6 +16,7 @@ def build_parser():
     p.add_argument("-l", "--language", default=None)
     p.add_argument("--prec", default="int4")
     p.add_argument("--device", default=os.environ.get("QASR_DEVICE", "auto"))
+    p.add_argument("--n-ctx", type=int, default=2048, help="LLM context window (KV cache size; 2048 halves GPU memory vs 4096)")
     p.add_argument("--model", default="1.7b")
     p.add_argument("--model-dir", default=None)
     p.add_argument("--no-dml", action="store_true")
@@ -45,7 +46,7 @@ def main(argv=None) -> int:
         from q3asr import output
         paths = models_mod.resolve_paths(
             model=args.model, model_dir=Path(args.model_dir) if args.model_dir else None)
-        eng = TranscribeEngine({"paths": paths, "device": device})
+        eng = TranscribeEngine({"paths": paths, "device": device, "n_ctx": args.n_ctx})
         res = eng.transcribe(args.input, language=args.language,
                              start_second=args.seek_start, duration=args.duration)
         base = Path(args.input).with_suffix("")
