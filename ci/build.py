@@ -47,12 +47,14 @@ def main(target: str):
         sys.exit(f"unknown target {target}; choose from {sorted(TARGETS)}")
     t = TARGETS[target]
     backend = t["llama"][1] or "cpu"
-    # App runtime deps + pyinstaller from PyPI (no llama-cpp-python here: pip may
-    # have installed a source-built CPU wheel already, and a later same-version
-    # install is treated as satisfied — silently keeping the wrong backend).
+    # App runtime deps + pyinstaller from PyPI. llama-cpp-python's runtime deps
+    # (typing-extensions, diskcache, jinja2, tqdm, numpy) are listed explicitly
+    # because the llama wheel is later force-installed with --no-deps (its index
+    # has no PyPI fallback), and onnxruntime-directml does not provide them.
     _pip_install([sys.executable, "-m", "pip", "install",
                   "pyinstaller", t["onnx"],
-                  "numpy", "scipy", "gguf", "pyyaml", "imageio-ffmpeg"])
+                  "numpy", "scipy", "gguf", "pyyaml", "imageio-ffmpeg",
+                  "typing-extensions", "diskcache", "jinja2", "tqdm"])
     # Force the correct llama-cpp-python backend wheel (exclusive index + force
     # reinstall + no-deps, so a pre-existing CPU/source build is replaced).
     if target.startswith("macos"):
