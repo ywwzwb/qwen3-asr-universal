@@ -33,12 +33,13 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            # Ubuntu 20.04 runner is retired; build in a manylinux_2_28 container
-            # (glibc >= 2.28) on the host runner for wide binary compatibility.
+            # Ubuntu 20.04 runner is retired; build in a python:3.12-slim-bullseye
+            # container (Debian 11, glibc >= 2.31) on the host runner for wide
+            # binary compatibility. (manylinux images' static CPython can't run PyInstaller.)
             docker run --rm \
               -v "$PWD:/src" -w /src \
               -e TARGET=linux-${{ matrix.arch }}-${{ matrix.backend }} \
-              quay.io/pypa/manylinux_2_28_x86_64 bash ci/build_linux_container.sh
+              python:3.12-slim-bullseye bash ci/build_linux_container.sh
           else
             python ci/build.py ${{ matrix.os == 'windows-latest' && 'windows' || 'macos' }}-${{ matrix.arch }}-${{ matrix.backend }}
           fi
