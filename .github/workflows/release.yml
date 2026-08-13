@@ -16,9 +16,9 @@ jobs:
           - {os: windows-latest, arch: x64, backend: cpu}
           - {os: windows-latest, arch: x64, backend: cuda}
           - {os: windows-latest, arch: x64, backend: vulkan}
-          - {os: ubuntu-20.04,   arch: x64, backend: cpu}
-          - {os: ubuntu-20.04,   arch: x64, backend: cuda}
-          - {os: ubuntu-20.04,   arch: x64, backend: vulkan}
+          - {os: ubuntu-latest,  arch: x64, backend: cpu}
+          - {os: ubuntu-latest,  arch: x64, backend: cuda}
+          - {os: ubuntu-latest,  arch: x64, backend: vulkan}
           - {os: macos-14,       arch: arm64, backend: metal}
           - {os: macos-14,       arch: arm64, backend: cpu}
     runs-on: ${{ matrix.os }}
@@ -30,7 +30,18 @@ jobs:
       # NOTE: no `pip install -e .` — that would source-build a CPU llama-cpp-python
       # on Windows and poison every GPU target; ci/build.py installs all deps.
       - name: Build
-        run: python ci/build.py ${{ matrix.os == 'windows-latest' && 'windows' || matrix.os == 'ubuntu-20.04' && 'linux' || 'macos' }}-${{ matrix.arch }}-${{ matrix.backend }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            # Ubuntu 20.04 runner is retired; build in an ubuntu:20.04 container
+            # on the host runner so the binary stays compatible with glibc >= 2.31.
+            docker run --rm \
+              -v "$PWD:/src" -w /src \
+              -e TARGET=linux-${{ matrix.arch }}-${{ matrix.backend }} \
+              ubuntu:20.04 bash ci/build_linux_container.sh
+          else
+            python ci/build.py ${{ matrix.os == 'windows-latest' && 'windows' || 'macos' }}-${{ matrix.arch }}-${{ matrix.backend }}
+          fi
       - name: Smoke test binary
         shell: bash
         run: |
