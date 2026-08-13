@@ -20,7 +20,7 @@
 | Linux x64 | `qwen3-asr-linux-x64-cpu.zip` / `-cuda` / `-vulkan` | CPU / NVIDIA CUDA / Vulkan |
 | macOS arm64 | `qwen3-asr-macos-arm64-metal.zip` / `-cpu` | Metal(Apple Silicon)/ CPU |
 
-> Linux 版本在 Ubuntu 20.04(glibc ≥ 2.31)上构建,兼容所有更新的发行版。
+> Linux 版本在 manylinux_2_28 环境(glibc ≥ 2.28)构建,兼容 Ubuntu 18.10+、Debian 10+ 及所有更新的发行版。
 
 ## 快速开始
 
