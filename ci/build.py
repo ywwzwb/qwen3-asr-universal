@@ -15,7 +15,11 @@ TARGETS = {
     "windows-x64-cuda":   {"onnx": "onnxruntime-gpu", "llama": ["llama-cpp-python", "cuda"]},
     "windows-x64-vulkan": {"onnx": "onnxruntime-directml", "llama": ["llama-cpp-python", "vulkan"]},
     "linux-x64-cpu":      {"onnx": "onnxruntime", "llama": ["llama-cpp-python", ""]},
-    "linux-x64-cuda":     {"onnx": "onnxruntime-gpu", "llama": ["llama-cpp-python", "cuda"]},
+    # linux CUDA 从源码构建: abetlen 预编译 cu124 wheel 把 AVX512 编进了 libggml-cpu,
+    # 在无 AVX512 的 CPU (Zen1/2 等) 上即使只跑 CUDA 也会 SIGILL。
+    "linux-x64-cuda":     {"onnx": "onnxruntime-gpu", "llama": ["llama-cpp-python", "cuda"],
+                           "source_build": True,
+                           "llama_version": "0.3.28"},
     "linux-x64-vulkan":   {"onnx": "onnxruntime", "llama": ["llama-cpp-python", "vulkan"]},
     "macos-arm64-metal":  {"onnx": "onnxruntime", "llama": ["llama-cpp-python", "metal"]},   # onnxruntime macOS arm64 wheel 内置 MPS EP (onnxruntime-silicon 已下架)
     "macos-arm64-cpu":    {"onnx": "onnxruntime", "llama": ["llama-cpp-python", ""]},
@@ -30,11 +34,11 @@ HIDDEN = [
 LLAMA_INDEX = {"cpu": "cpu", "vulkan": "vulkan", "cuda": "cu124", "metal": "metal"}
 
 
-def _pip_install(cmd, retries=3):
+def _pip_install(cmd, retries=3, env=None):
     """pip install with retries (transient CDN/CRC corruptions happen)."""
     for i in range(retries):
         try:
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, env=env)
             return
         except subprocess.CalledProcessError:
             if i == retries - 1:
@@ -63,6 +67,22 @@ def main(target: str):
         # arm64 source build enables Metal by default.
         _pip_install([sys.executable, "-m", "pip", "install", "--force-reinstall",
                       "llama-cpp-python"])
+    elif t.get("source_build"):
+        # Build llama-cpp-python from the PyPI sdist with explicit CMAKE_ARGS.
+        # GGML_NATIVE=OFF keeps the CPU backend AVX512-free (avoids SIGILL on
+        # non-AVX512 machines); GGML_CUDA=ON enables GPU offload for the
+        # decoder. Requires nvcc + cmake + ninja in the build env (see
+        # build_linux_container.sh for linux-x64-cuda).
+        ver = t.get("llama_version")
+        spec = f"llama-cpp-python=={ver}" if ver else "llama-cpp-python"
+        cmake_args = os.environ.get(
+            "CMAKE_ARGS",
+            "-DGGML_CUDA=ON -DGGML_NATIVE=OFF "
+            "-DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF "
+            "-DGGML_AVX512_VNNI=OFF -DGGML_AVX512_BF16=OFF")
+        env = dict(os.environ, CMAKE_ARGS=cmake_args)
+        _pip_install([sys.executable, "-m", "pip", "install", "--force-reinstall",
+                      spec], env=env)
     else:
         _pip_install([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps",
                       "llama-cpp-python",

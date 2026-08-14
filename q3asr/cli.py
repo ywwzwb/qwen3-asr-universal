@@ -35,6 +35,18 @@ def main(argv=None) -> int:
     try:
         device = backend_mod.detect_backend(args.device)
         print(f"[INFO] backend: {device}")
+        missing = backend_mod.runtime_missing(device)
+        if missing and args.device != "auto":
+            print(f"[ERROR] device '{device}' requested but required runtime libraries "
+                  f"are missing: {', '.join(missing)}", file=sys.stderr)
+            print("[ERROR] CUDA builds need NVIDIA CUDA runtime (libcudart.so.12, "
+                  "libcublas.so.12); install via 'pip install nvidia-cudart-cu12 "
+                  "nvidia-cublas-cu12' or the system CUDA toolkit.", file=sys.stderr)
+            return 1
+        if missing:
+            print(f"[WARN] {device} runtime libraries missing ({', '.join(missing)}); "
+                  "falling back to CPU", file=sys.stderr)
+            device = "cpu"
         if args.download_models_only:
             models_mod.ensure_models(model=args.model)
             print("[INFO] models ready")

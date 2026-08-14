@@ -14,4 +14,19 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends binutils >/dev/null
 
+# linux-x64-cuda builds llama-cpp-python from source, which needs the CUDA
+# toolkit (nvcc) plus cmake/ninja. The CPU/Vulkan targets use prebuilt wheels.
+if [[ "$TARGET" == *-cuda ]]; then
+    apt-get install -y --no-install-recommends \
+        curl ca-certificates gnupg cmake ninja-build >/dev/null
+    curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/debian11/x86_64/cuda-keyring_1.1-1_all.deb" \
+        -o /tmp/cuda-keyring.deb
+    dpkg -i /tmp/cuda-keyring.deb >/dev/null
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        cuda-nvcc-12-4 cuda-cudart-dev-12-4 libcublas-dev-12-4 >/dev/null
+    export PATH="/usr/local/cuda-12.4/bin:$PATH"
+    export LD_LIBRARY_PATH="/usr/local/cuda-12.4/lib64:$LD_LIBRARY_PATH"
+fi
+
 python ci/build.py "$TARGET"

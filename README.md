@@ -90,7 +90,18 @@ q3asr <audio> [-y] [--seek-start X] [--duration Y] [-l language]
 
 优先级: `--device` > 环境变量 `QASR_DEVICE` > 自动探测(`cuda` → `vulkan` → `metal` → `cpu`)。
 
-每个发布 zip 内置对应后端的推理库;检测到 GPU 不可用时会告警并回退 CPU(不报错)。
+每个发布 zip 内置对应后端的推理库;自动探测只认编译进构建的后端(lib 目录里存在
+`libggml-cuda.so` / `libggml-vulkan.so`),检测到 GPU 不可用时会告警并回退 CPU(不报错)。
+
+### GPU 后端运行时依赖
+
+- **CUDA**(Linux): 除驱动外,还需要 CUDA 运行库 `libcudart.so.12`、`libcublas.so.12`、
+  `libcublasLt.so.12`(NVIDIA driver 自带的 `libcuda.so` 不满足)。缺失时显式
+  `--device cuda` 会直接报错退出;可用 `pip install nvidia-cudart-cu12 nvidia-cublas-cu12`
+  或系统 CUDA toolkit 安装。CUDA 构建从源码编译,CPU 后端不启用 AVX512,因此也兼容
+  Zen 1/2 等无 AVX512 的处理器(不兼容 abetlen 预编译 cu124 wheel 的机型不再受限)。
+- **Vulkan**: 需要系统 Vulkan loader `libvulkan.so.1` 与对应 GPU 的 Vulkan ICD。
+- **metal**: 仅 macOS(Apple Silicon)。
 
 ## 从源码运行
 
@@ -113,6 +124,10 @@ python ci/build.py linux-x64-cpu      # 可选: windows-x64-cpu|cuda|vulkan
                                      #        linux-x64-cpu|cuda|vulkan
                                      #        macos-arm64-metal|cpu
 ```
+
+Linux CUDA 目标从源码构建 llama-cpp-python(关闭 AVX512),需要 CUDA 工具链
+(nvcc + cmake + ninja);`ci/build_linux_container.sh` 已自动安装 CUDA 12.4 工具链。
+其余目标使用预编译 wheel。
 
 打 tag(`v*`)自动触发 GitHub Actions 矩阵构建并发布到 Releases:
 
